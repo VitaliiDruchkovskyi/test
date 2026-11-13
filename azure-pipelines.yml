@@ -13,7 +13,7 @@
 # On PR runs only the Build stage runs.
 #
 # Approvals / business-hours / exclusive-lock checks live on the Environments
-# (Pipelines > Environments > benefitnetflex-<env> > Approvals and checks), not in YAML.
+# (Pipelines > Environments > development | staging | production > Approvals and checks), not in YAML.
 
 name: $(Date:yyyy.MM.dd)$(Rev:.r)
 
@@ -225,7 +225,7 @@ stages:
   jobs:
   - template: templates/deploy-environment.yml
     parameters:
-      environment: benefitnetflex-dev
+      environment: development
       serviceConnection: sc-benefitnetflex-dev
       webApps: ${{ parameters.webApps }}
       vmImage: ${{ variables.vmImage }}
@@ -241,7 +241,7 @@ stages:
   jobs:
   - template: templates/deploy-environment.yml
     parameters:
-      environment: benefitnetflex-staging
+      environment: staging
       serviceConnection: sc-benefitnetflex-staging
       webApps: ${{ parameters.webApps }}
       vmImage: ${{ variables.vmImage }}
@@ -257,7 +257,7 @@ stages:
   jobs:
   - template: templates/deploy-environment.yml
     parameters:
-      environment: benefitnetflex-prod
+      environment: production
       serviceConnection: sc-benefitnetflex-prod
       webApps: ${{ parameters.webApps }}
       vmImage: ${{ variables.vmImage }}

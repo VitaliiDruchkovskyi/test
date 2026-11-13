@@ -15,7 +15,7 @@ Merge a PR into `main`. The pipeline builds and deploys to **Development** autom
    git push -u origin release/2026.11
    ```
 2. The push starts a run that deploys to **Staging** automatically. QA and UAT sign off on Staging.
-3. **Production** waits for the approval on the `benefitnetflex-prod` environment. Approvers can see the build number (`yyyy.MM.dd.r`) and the commits it contains.
+3. **Production** waits for the approval on the `production` environment. Approvers can see the build number (`yyyy.MM.dd.r`) and the commits it contains.
 4. On approval, Production deploys the **same artifact** that Staging ran. The pipeline then tags the commit `prod/<build number>` and adds the run tag `released-to-prod`.
 
 To find what is in Production: `git describe --tags --match "prod/*" --abbrev=0 origin/release/<current>`, or filter pipeline runs by the `released-to-prod` tag.

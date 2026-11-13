@@ -68,7 +68,7 @@ Keep feature branches short, a few days at most. Hide unfinished features behind
    git push -u origin release/2026.11
    ```
 2. The push starts a run that deploys to **Staging** automatically. QA and UAT happen on Staging.
-3. Production waits for the approval on the `benefitnetflex-prod` environment. On approval, the Web app goes out through the staging slot, swap and smoke test, the workers are deployed, and the commit is tagged `prod/<build number>`.
+3. Production waits for the approval on the `production` environment. On approval, the Web app goes out through the staging slot, swap and smoke test, the workers are deployed, and the commit is tagged `prod/<build number>`.
 
 ### Fixing a bug found in Staging or Production ("upstream first")
 1. Fix it in `main` first, with a normal `bugfix/*` PR. This guarantees the fix is never lost in the next release.
@@ -94,7 +94,7 @@ Keep the previous release branch until the next one is in Production, so it is s
 | Fix in `main` first, then cherry-pick | Prevents regressions where a fix exists only on an old release branch |
 | Schema changes are backward compatible (expand/contract) | Development runs `main`'s schema while Staging and Production run the release branch's schema. A dacpac from `main` must not break the code on the release branch, and vice versa |
 | Feature flags for unfinished work | Keeps feature branches short and avoids merge pain |
-| Production only from `release/*` | Enforced twice: by the stage condition in YAML and by the **Branch control** check on the `benefitnetflex-prod` environment |
+| Production only from `release/*` | Enforced twice: by the stage condition in YAML and by the **Branch control** check on the `production` environment |
 
 ## Why Release Flow, and not the alternatives
 

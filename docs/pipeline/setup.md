@@ -1,12 +1,12 @@
 # One-time setup
 
-Do these steps in Azure and Azure DevOps before the pipeline's first run. Repeat steps 1–4 for each environment (`dev`, `staging`, `prod`).
+Do these steps in Azure and Azure DevOps before the pipeline's first run. Repeat steps 1–4 for each environment (`development`, `staging`, `production`).
 
 ## 1. Azure resources (per environment)
 
 | Resource | Name / requirement |
 |---|---|
-| App Service: Web | `<appServicePrefix>-web`. **Prod also needs a deployment slot named `staging`.** This is the slot that is swapped into production. It is not the Staging environment |
+| App Service: Web | `<appServicePrefix>-web`. **Prod also needs a deployment slot named `staging`.** This is the slot that is swapped into production. It is not the `staging` environment, which has its own App Services |
 | App Service: BulkOperationWorker | `<appServicePrefix>-bulkoperationworker` |
 | App Service: MaintenanceWorker | `<appServicePrefix>-maintenanceworker` |
 | Azure SQL Database | `<sqlServerName>` / `<sqlDatabaseName>`, with Entra ID authentication enabled on the server |
@@ -48,13 +48,13 @@ Grant pipeline permission to this pipeline only.
 
 ## 4. Environments
 
-Go to **Pipelines › Environments** and create `benefitnetflex-dev`, `benefitnetflex-staging` and `benefitnetflex-prod`. Recommended checks:
+Go to **Pipelines › Environments** and create `development`, `staging` and `production`. Recommended checks:
 
 | Environment | Checks |
 |---|---|
-| dev | **Branch control**: `refs/heads/main` |
+| development | **Branch control**: `refs/heads/main` |
 | staging | **Branch control**: `refs/heads/release/*`. **Exclusive lock**, so a newer release run waits for the current one |
-| prod | **Branch control**: `refs/heads/release/*`. **Approvals** (release managers, not the person who queued the run). **Business hours**. **Exclusive lock** |
+| production | **Branch control**: `refs/heads/release/*`. **Approvals** (release managers, not the person who queued the run). **Business hours**. **Exclusive lock** |
 
 Branch control backs up the stage conditions in the YAML. Even if someone edits the conditions, Production only accepts runs from a release branch. See [branching.md](branching.md).
 

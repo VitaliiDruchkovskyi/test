@@ -67,7 +67,7 @@ Which stages run depends on the branch (see [branching.md](branching.md)):
 Each deploy stage:
 
 1. Loads its variable group (`benefitnetflex-<env>`).
-2. Runs a deployment job against the Azure DevOps Environment `benefitnetflex-<env>`. Approvals and checks configured on the environment pause the run here.
+2. Runs a deployment job against its Azure DevOps Environment (`development`, `staging` or `production`). Approvals and checks configured on the environment pause the run here.
 3. Inside the job, in this order:
    1. **Database**: publishes the dacpac with `BlockOnPossibleDataLoss=true`.
    2. **Blob assets**: uploads them with `az storage blob upload-batch`, authenticated through Entra ID rather than storage keys.
@@ -83,7 +83,7 @@ Within a run, artifacts are never rebuilt. Production always runs exactly the ar
 - **App Service name**: `<appServicePrefix>-<lower(app name)>`, for example `bnf-prod-web` or `bnf-prod-bulkoperationworker`.
 - **Variable group per environment**: `benefitnetflex-dev`, `benefitnetflex-staging` and `benefitnetflex-prod`. For the required variables, see [setup.md](setup.md#3-variable-groups).
 - **Service connection per environment**: `sc-benefitnetflex-<env>`.
-- **Environment per stage**: `benefitnetflex-<env>`.
+- **Environment per stage**: `development`, `staging` and `production`.
 - **Ninject profiles**: `App_Data/ninjectModules.<profile>.xml` must exist in each app and be a `Content` item, so that publish includes it.
 - **Build number**: `yyyy.MM.dd.r`, for example `2026.11.13.2`. Use it to refer to a release. Production releases are also tagged in git as `prod/<build number>`.
 - **Slot vs. environment**: `staging` (lowercase) is the Prod Web app's deployment slot. **Staging** is the separate pre-production environment.
