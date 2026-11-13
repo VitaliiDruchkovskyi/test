@@ -8,7 +8,7 @@ This folder documents the build-to-release pipeline for BenefitNetFlex (.NET Fra
 | [review.md](review.md) | Problems in the legacy pipeline and the reasoning behind the new design |
 | [setup.md](setup.md) | One-time setup in Azure DevOps and Azure: service connections, environments, variable groups, roles, branch policy |
 | [runbook.md](runbook.md) | Day-to-day operations: releasing, rollback, adding an app, troubleshooting |
-| [legacy/azure-pipelines.legacy.yml](legacy/azure-pipelines.legacy.yml) | The original build-only pipeline, kept for reference |
+| [../task/](../task/README.md) | The original assignment and the original build-only pipeline ([azure.yml](../task/azure.yml)), kept as reference |
 
 ## Files
 

@@ -1,6 +1,6 @@
 # Pipeline review and design decisions
 
-This review covers the legacy pipeline ([legacy/azure-pipelines.legacy.yml](legacy/azure-pipelines.legacy.yml)): what was wrong with it, how the new pipeline addresses each problem, and why.
+This review covers the legacy pipeline ([docs/task/azure.yml](../task/azure.yml)): what was wrong with it, how the new pipeline addresses each problem, and why.
 
 ## 1. Problems in the legacy pipeline
 

@@ -1,7 +1,3 @@
-# LEGACY - kept for reference only. Do NOT point a pipeline at this file.
-# This is the original build-only pipeline that the root azure-pipelines.yml replaces.
-# The problems with it are listed in docs/pipeline/review.md.
-
 # ASP.NET
 # Build and test ASP.NET projects.
 # Add steps that publish symbols, save build artifacts, deploy, and more:
