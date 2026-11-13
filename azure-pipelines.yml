@@ -27,18 +27,22 @@ trigger:
 parameters:
 # One entry per deployable ASP.NET app. App Service name = <appServicePrefix>-<lower(name)>
 # slotSwap: false for background workers, so two copies never process jobs at the same time.
+# smokeTest: true if the app answers 200 on healthPath anonymously; checked after every deploy.
 - name: webApps
   type: object
   default:
   - name: Web
     project: src/BenefitNetFlex/BenefitNetFlex.Web/BenefitNetFlex.Web.csproj
     slotSwap: true
+    smokeTest: true
   - name: BulkOperationWorker
     project: src/BenefitNetFlex/BenefitNetFlex.BulkOperationWorker/BenefitNetFlex.BulkOperationWorker.csproj
     slotSwap: false
+    smokeTest: false
   - name: MaintenanceWorker
     project: src/BenefitNetFlex/BenefitNetFlex.MaintenanceWorker/BenefitNetFlex.MaintenanceWorker.csproj
     slotSwap: false
+    smokeTest: false
 
 # Comma-separated NuGet service connections for external feeds that need credentials
 # (e.g. 'sc-nuget-vendor'). Leave empty if all feeds are Azure Artifacts feeds in this org.
@@ -52,6 +56,12 @@ variables:
   dacpacName: BenefitNetFlex.DataBase      # file name (without .dacpac) of the database to deploy
   buildConfiguration: Release
   vmImage: windows-2025             # pinned on purpose; bump deliberately, not via windows-latest
+  # Security scans. Start in report-only mode; switch on the gates once existing findings
+  # are triaged (docs/pipeline/runbook.md, "Security scans").
+  dependencyCheckVersion: 12.1.0          # OWASP Dependency-Check CLI; bump deliberately
+  dependencyCheckFailOnCvss: 11           # 11 = report only; 7 = fail the build on High/Critical
+  zapImage: ghcr.io/zaproxy/zaproxy:2.16.1   # OWASP ZAP; pinned image tag
+  zapFailOnFindings: false                # true = block Production when the baseline scan warns
   # main or release/*, and not a PR build. Gates symbol publishing; stage conditions route by branch.
   isDeployable: $[and(or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')), ne(variables['Build.Reason'], 'PullRequest'))]
 
@@ -166,6 +176,110 @@ stages:
         targetPath: $(Build.ArtifactStagingDirectory)/logs
         artifact: logs-$(System.JobAttempt)
 
+  # OWASP Dependency-Check on the restored NuGet packages (OWASP Top 10 A06: vulnerable
+  # components). Runs in parallel with the App job so it doesn't slow the build down.
+  - job: DependencyScan
+    displayName: OWASP Dependency-Check (NuGet packages)
+    pool:
+      vmImage: ${{ variables.vmImage }}
+    variables:
+    - group: benefitnetflex-build          # secret: nvdApiKey (free key from nvd.nist.gov)
+    steps:
+    - checkout: self
+      fetchDepth: 1
+
+    - task: NuGetToolInstaller@1
+      inputs:
+        versionSpec: 6.x
+
+    - task: Cache@2
+      displayName: Cache NuGet packages
+      inputs:
+        key: 'nuget | "$(Agent.OS)" | src/BenefitNetFlex/**/packages.config'
+        path: $(Build.SourcesDirectory)/src/BenefitNetFlex/packages
+        cacheHitVar: NUGET_CACHE_RESTORED
+
+    - task: NuGetAuthenticate@1
+      displayName: Authenticate NuGet feeds
+      ${{ if ne(parameters.nuGetServiceConnections, '') }}:
+        inputs:
+          nuGetServiceConnections: ${{ parameters.nuGetServiceConnections }}
+
+    - task: NuGetCommand@2
+      displayName: NuGet restore
+      condition: ne(variables.NUGET_CACHE_RESTORED, 'true')
+      inputs:
+        command: restore
+        restoreSolution: $(solution)
+
+    - task: JavaToolInstaller@0
+      displayName: Use Java 17
+      inputs:
+        versionSpec: '17'
+        jdkArchitectureOption: x64
+        jdkSourceOption: PreInstalled
+
+    # The vulnerability database is cached per week; the scan then only downloads updates.
+    - pwsh: Write-Host "##vso[task.setvariable variable=DC_CACHE_WEEK]$(Get-Date -UFormat '%Y-%V')"
+      displayName: Compute vulnerability DB cache key
+
+    - task: Cache@2
+      displayName: Cache vulnerability database
+      inputs:
+        key: 'dependency-check | "$(Agent.OS)" | $(dependencyCheckVersion) | $(DC_CACHE_WEEK)'
+        restoreKeys: |
+          dependency-check | "$(Agent.OS)" | $(dependencyCheckVersion)
+        path: $(Pipeline.Workspace)/dc-data
+
+    - pwsh: |
+        $ver = "$(dependencyCheckVersion)"
+        $zip = "$(Agent.TempDirectory)/dependency-check.zip"
+        Invoke-WebRequest "https://github.com/dependency-check/DependencyCheck/releases/download/v$ver/dependency-check-$ver-release.zip" -OutFile $zip -UseBasicParsing
+        Expand-Archive $zip -DestinationPath "$(Agent.TempDirectory)" -Force
+
+        $dcArgs = @(
+          '--project', 'BenefitNetFlex',
+          '--scan', "$(Build.SourcesDirectory)/src/BenefitNetFlex/packages",
+          '--out', "$(Build.ArtifactStagingDirectory)/dependency-check",
+          '--format', 'HTML', '--format', 'JSON', '--format', 'JUNIT',
+          '--data', "$(Pipeline.Workspace)/dc-data",
+          '--failOnCVSS', "$(dependencyCheckFailOnCvss)",
+          '--junitFailOnCVSS', '7',
+          '--disableAssembly',   # packages are identified from their .nuspec files
+          '--disableOssIndex'    # Sonatype OSS Index needs its own credentials; NVD is the source
+        )
+        if ($env:NVD_API_KEY -and -not $env:NVD_API_KEY.StartsWith('$(')) { $dcArgs += @('--nvdApiKey', $env:NVD_API_KEY) }
+        else { Write-Host "##vso[task.logissue type=warning]No nvdApiKey in variable group benefitnetflex-build; the database update will be very slow." }
+        $suppressions = "$(Build.SourcesDirectory)/dependency-check-suppressions.xml"
+        if (Test-Path $suppressions) { $dcArgs += @('--suppression', $suppressions) }
+
+        & "$(Agent.TempDirectory)/dependency-check/bin/dependency-check.bat" @dcArgs
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "##vso[task.logissue type=error]Dependency-Check failed or found vulnerabilities with CVSS >= $(dependencyCheckFailOnCvss). See the dependency-check report artifact."
+          exit $LASTEXITCODE
+        }
+      displayName: Run OWASP Dependency-Check
+      env:
+        NVD_API_KEY: $(nvdApiKey)
+
+    # High/Critical findings (CVSS >= 7) show as failed tests in the Tests tab without
+    # failing the job; the job fails only through dependencyCheckFailOnCvss.
+    - task: PublishTestResults@2
+      displayName: Publish findings to Tests tab
+      condition: succeededOrFailed()
+      inputs:
+        testResultsFormat: JUnit
+        testResultsFiles: $(Build.ArtifactStagingDirectory)/dependency-check/dependency-check-junit.xml
+        testRunTitle: OWASP Dependency-Check
+        failTaskOnFailedTests: false
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish report
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/dependency-check
+        artifact: dependency-check-$(System.JobAttempt)
+
   - job: Database
     displayName: Build database & static assets
     pool:
@@ -247,6 +361,53 @@ stages:
       vmImage: ${{ variables.vmImage }}
       dacpacName: ${{ variables.dacpacName }}
       ninjectProfile: Release
+
+  # OWASP ZAP baseline scan of the freshly deployed Staging Web app (passive: no attack
+  # traffic). Runs before Production, so approvers can read the report first.
+  # Staging must be reachable from Microsoft-hosted agents (see docs/pipeline/setup.md).
+  - job: ZapBaseline
+    displayName: OWASP ZAP baseline scan (Web)
+    dependsOn: Deploy
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+    - checkout: none
+
+    - task: AzureCLI@2
+      displayName: Run ZAP baseline scan
+      inputs:
+        azureSubscription: sc-benefitnetflex-staging
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -uo pipefail
+          host=$(az webapp show -g "$(resourceGroupName)" -n "$(appServicePrefix)-web" --query defaultHostName -o tsv)
+          if [ -z "$host" ]; then echo "##vso[task.logissue type=error]Could not resolve the Staging Web host name"; exit 1; fi
+
+          out="$(Build.ArtifactStagingDirectory)/zap"
+          mkdir -p "$out" && chmod 777 "$out"
+          docker run --rm -v "$out:/zap/wrk:rw" "$(zapImage)" zap-baseline.py -t "https://$host" -r zap-report.html -J zap-report.json -x zap-report.xml
+          rc=$?
+
+          # zap-baseline exit codes: 0 = clean, 1 = FAIL findings, 2 = WARN findings, 3 = error
+          case $rc in
+            0) echo "ZAP baseline: no findings." ;;
+            1|2)
+              if [ "$(zapFailOnFindings)" = "true" ]; then
+                echo "##vso[task.logissue type=error]ZAP baseline reported findings (exit $rc). See the zap-report artifact."
+                exit 1
+              fi
+              echo "##vso[task.logissue type=warning]ZAP baseline reported findings (exit $rc). See the zap-report artifact."
+              echo "##vso[task.complete result=SucceededWithIssues;]" ;;
+            *) echo "##vso[task.logissue type=error]ZAP scan error (exit $rc)"; exit $rc ;;
+          esac
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish ZAP report
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/zap
+        artifact: zap-report-$(System.JobAttempt)
 
 - stage: Prod
   displayName: Production

@@ -86,19 +86,28 @@ jobs:
               package: $(Pipeline.Workspace)/web/${{ app.name }}
               deploymentMethod: zipDeploy   # not runFromPackage: legacy apps may write to App_Data
 
-          - ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
-            # Ask Azure for the slot's real host name: apps created with "unique default
-            # hostname" don't follow the <app>-<slot>.azurewebsites.net pattern.
-            # Redirects are not followed, so a redirect to a login page counts as a failure.
+          # Smoke test after every deploy, in every environment, for apps with smokeTest: true.
+          # Apps that use the slot are always tested on the slot BEFORE the swap.
+          # The real host name comes from Azure (apps with "unique default hostname" don't
+          # follow <app>.azurewebsites.net). Redirects are not followed, so a redirect to a
+          # login page counts as a failure.
+          - ${{ if or(eq(app.smokeTest, true), and(parameters.useStagingSlot, eq(app.slotSwap, true))) }}:
             - task: AzureCLI@2
-              displayName: ${{ app.name }} - smoke test staging slot
+              ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+                displayName: ${{ app.name }} - smoke test staging slot
+              ${{ else }}:
+                displayName: ${{ app.name }} - smoke test
+              env:
+                ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+                  SMOKE_SLOT: staging
               inputs:
                 azureSubscription: ${{ parameters.serviceConnection }}
                 scriptType: pscore
                 scriptLocation: inlineScript
                 inlineScript: |
-                  $hostName = az webapp show --resource-group "$(resourceGroupName)" --name "$(appServicePrefix)-${{ lower(app.name) }}" --slot staging --query defaultHostName -o tsv
-                  if ($LASTEXITCODE -ne 0 -or -not $hostName) { Write-Error "Could not resolve staging slot host name"; exit 1 }
+                  $slotArgs = @(); if ($env:SMOKE_SLOT) { $slotArgs = @('--slot', $env:SMOKE_SLOT) }
+                  $hostName = az webapp show --resource-group "$(resourceGroupName)" --name "$(appServicePrefix)-${{ lower(app.name) }}" @slotArgs --query defaultHostName -o tsv
+                  if ($LASTEXITCODE -ne 0 -or -not $hostName) { Write-Error "Could not resolve host name"; exit 1 }
                   $url = "https://$hostName${{ parameters.healthPath }}"
                   foreach ($i in 1..10) {
                     try {
@@ -111,6 +120,7 @@ jobs:
                   Write-Error "Smoke test failed: $url"
                   exit 1
 
+          - ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
             - task: AzureAppServiceManage@0
               displayName: ${{ app.name }} - swap staging -> production
               inputs:

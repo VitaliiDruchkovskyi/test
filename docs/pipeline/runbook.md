@@ -48,6 +48,23 @@ No change to the template is needed.
 - **Values** (connection strings, keys): put them in App Service settings or Key Vault, not in the repo.
 - **Ninject module set**: add `App_Data/ninjectModules.<Profile>.xml` and set `ninjectProfile: <Profile>` on that stage in `azure-pipelines.yml`.
 
+## Security scans
+
+| Scan | When | Report | Gate (default: report-only) |
+|---|---|---|---|
+| OWASP Dependency-Check | Every run, Build stage (PRs too) | Artifact `dependency-check-<attempt>` (HTML/JSON). CVSS ≥ 7 findings also appear in the **Tests** tab | `dependencyCheckFailOnCvss`: `11` reports only. `7` fails the build on High/Critical |
+| OWASP ZAP baseline | Every `release/*` run, after the Staging deploy | Artifact `zap-report-<attempt>` (HTML/JSON/XML). The job shows *partially succeeded* when ZAP warns | `zapFailOnFindings`: `false` reports only. `true` fails the Staging stage, so Production can't start |
+
+**Rolling out the gates:**
+1. Run in report-only mode for a few releases. Fix or triage the existing findings.
+2. **Dependency-Check false positives**: add a `dependency-check-suppressions.xml` at the repo root. The pipeline picks it up automatically. Give each suppression a reason and an expiry date (`until=`).
+3. **Noisy ZAP rules**: tune them with a ZAP rules file (`-c`), or fix the headers or cookies they flag.
+4. Set `dependencyCheckFailOnCvss: 7` and `zapFailOnFindings: true` in `azure-pipelines.yml` through a PR.
+
+**Approvers**: before you approve Production, open the Staging run's `zap-report` artifact and the Build stage's `dependency-check` report.
+
+**Never** point a ZAP *full* (active) scan at Production. Active scans send attack traffic. Run them against Staging only, as a separate scheduled pipeline.
+
 ## Upgrading the build agent
 
 `vmImage` is pinned to `windows-2025`. To move to a newer image, change the `vmImage` variable in a PR. The PR build validates the change before it reaches `main`.
@@ -69,7 +86,11 @@ No change to the template is needed.
 | `select ninject profile` fails | `ninjectModules.<profile>.xml` is not in the published output. Set its Build Action to Content. |
 | `Upload blob assets` returns 403 | The service connection identity is missing `Storage Blob Data Contributor`. Role assignments can take a few minutes to apply. |
 | Smoke test fails with HTTP 302 | `healthPath` redirects, for example to a login page. Point it at an anonymous endpoint that returns 200. |
-| Smoke test fails with a timeout | The app didn't start on the staging slot. Check the slot's log stream and slot-specific app settings. Production is unaffected, because nothing has been swapped. |
+| Smoke test fails with a timeout | The app didn't start. In Prod, that means the staging slot, and production is unaffected because nothing has been swapped. Check the app's log stream and app settings. In Development or Staging, the new version is already live in that environment. Fix it, or re-run the last good run's stage. |
+| `Run OWASP Dependency-Check` is very slow or times out | The `nvdApiKey` secret is missing or invalid, or the vulnerability-database cache was evicted. Check the `benefitnetflex-build` variable group. The first run each week refreshes the cache. |
+| `Run OWASP Dependency-Check` fails with CVSS ≥ N | The gate is on (`dependencyCheckFailOnCvss` below 11) and a package has a known vulnerability. Upgrade the package, or suppress a confirmed false positive with a reason. |
+| `Run ZAP baseline scan` exits with code 3 | ZAP couldn't run or couldn't reach the site. Check that Staging is reachable from hosted agents ([setup.md § 7a](setup.md#7a-security-scans-prerequisites)) and that the Docker image tag exists. |
+| Staging stage shows *partially succeeded* | ZAP reported warnings in report-only mode. Read the `zap-report` artifact. Production can still be approved. |
 | Deploy stages skipped | Expected: PR builds deploy nowhere, `main` deploys only to Development, and `release/*` deploys only to Staging and Production. Other branches deploy nowhere. |
 | `Tag commit` fails with 403 / TF401027 | The build service identity is missing **Contribute** or **Create tag** on the repo ([setup.md § 5](setup.md#5-symbols-and-git-tags)). The deploy itself succeeded. Create the tag by hand or re-run the job. |
 | `Tag commit` fails with "tag already exists" | The Prod stage was re-run for the same build. The tag already marks this commit, so this is safe to ignore. |

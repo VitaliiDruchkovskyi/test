@@ -46,6 +46,12 @@ Go to **Pipelines › Library**. Create `benefitnetflex-dev`, `benefitnetflex-st
 
 Grant pipeline permission to this pipeline only.
 
+Also create **`benefitnetflex-build`**, which the Build stage uses:
+
+| Variable | Value |
+|---|---|
+| `nvdApiKey` (**secret**) | A free API key from [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key). Without it, OWASP Dependency-Check's database update takes a very long time. |
+
 ## 4. Environments
 
 Go to **Pipelines › Environments** and create `development`, `staging` and `production`. Recommended checks:
@@ -93,6 +99,12 @@ The Build job runs `NuGetAuthenticate@1` ("Authenticate NuGet feeds") right befo
 
 **Recommended, for the "package not available" problem:** create an Azure Artifacts feed with nuget.org as an **upstream source** (*Artifacts › Create feed › Include packages from common public sources*), and point the solution's `nuget.config` at it. The feed saves a copy of every package it serves, so a nuget.org outage or a deleted package no longer breaks the build. The authentication step above already covers that feed.
 
+## 7a. Security scans: prerequisites
+
+- **Dependency-Check**: needs the `benefitnetflex-build` variable group with `nvdApiKey` (§ 3). It downloads the Dependency-Check CLI from GitHub and the vulnerability data from NVD. If the organization restricts outbound traffic, allow `github.com`, `objects.githubusercontent.com` and `services.nvd.nist.gov`.
+- **ZAP baseline scan**: runs on a Microsoft-hosted **Ubuntu** agent and scans the Staging Web app over HTTPS. Staging must be **reachable from Microsoft-hosted agents**. If it is behind a private endpoint, IP restrictions or a VPN, use a self-hosted agent inside the network, or allow the Azure DevOps IP ranges. It scans unauthenticated pages only. Scanning signed-in pages needs a ZAP authentication context, which is a later step.
+- **Smoke tests**: for every app with `smokeTest: true`, `healthPath` must return 200 anonymously, without a redirect, in **every** environment, not only on the Prod slot.
+
 ## 8. First-run checklist
 
 Check these against the real solution before you queue the first run:
@@ -104,6 +116,7 @@ Check these against the real solution before you queue the first run:
 - [ ] If restore uses Azure Artifacts or other authenticated feeds, the build service and service connections have access (§ 7).
 - [ ] All projects use `packages.config`. If any use `PackageReference`, remove the restore `condition` (see the comment in the YAML).
 - [ ] The projects' .NET Framework targeting pack is installed on the `windows-2025` image. Check the image's software list. If it isn't, pin `vmImage` to `windows-2022`.
-- [ ] Prod `healthPath` returns **200 without a redirect** for an anonymous request on the staging slot.
+- [ ] `healthPath` returns **200 without a redirect** for an anonymous request, in every environment, for apps with `smokeTest: true`.
+- [ ] The `benefitnetflex-build` variable group exists with the `nvdApiKey` secret, and Staging is reachable from hosted agents for ZAP (§ 7a).
 - [ ] If the old release process ran hand-written SQL scripts from the database folder, add them to the `database` artifact and a step for them. Only the dacpac is shipped now.
 - [ ] Treat the first run as a dry run. Merge to `main` and verify Development. Then cut a first `release/*` branch and verify Staging before approving Production.

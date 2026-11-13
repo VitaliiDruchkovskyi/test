@@ -25,11 +25,12 @@ flowchart LR
   subgraph Build["Build stage (every PR and every push to main)"]
     direction TB
     A["App job<br/>restore → compile → unit tests →<br/>symbols → publish each app"] --> W[(web)]
+    S["DependencyScan job<br/>OWASP Dependency-Check<br/>on NuGet packages"] --> R[(report)]
     D["Database job<br/>build dacpac, collect blob assets"] --> DB[(database)]
     D --> B[(blob)]
   end
   Build -->|main| Dev[Development]
-  Build -->|release/*| Stg[Staging]
+  Build -->|release/*| Stg["Staging<br/>+ OWASP ZAP baseline scan"]
   Stg -->|approval on environment| Prod["Production<br/>Web: staging slot → smoke test → swap<br/>Workers: direct deploy"]
   Prod --> Tag["git tag prod/&lt;build&gt;"]
 ```
@@ -38,16 +39,20 @@ flowchart LR
 
 It runs on every push to `main` or `release/*` and, through the branch policies, on every pull request into them.
 
-The **App** and **Database** jobs run in parallel.
+The **App**, **DependencyScan** and **Database** jobs run in parallel.
 
 1. **App job**
    - Restores NuGet packages: restores the cache, authenticates to the feeds (`NuGetAuthenticate`), then runs `NuGet restore`. The restore is skipped when the cache hits.
    - Compiles the solution once and writes an MSBuild binlog.
    - Runs the unit tests (`*Tests.dll`) with code coverage. The run fails if no tests are found.
-   - On `main` only, source-indexes the PDBs and publishes them to the Azure Artifacts symbol server.
+   - On `main` and `release/*` only, source-indexes the PDBs and publishes them to the Azure Artifacts symbol server.
    - Publishes each app in the `webApps` parameter to its own folder, without rebuilding. Precompilation and merge settings are kept.
    - Publishes the `web` artifact, plus the binlog if the job failed.
-2. **Database job**
+2. **DependencyScan job**: OWASP Dependency-Check
+   - Restores the NuGet packages, using the same cache and sign-in as the App job, and scans them against the NVD vulnerability database (OWASP Top 10 A06, vulnerable components).
+   - Publishes an HTML/JSON report artifact (`dependency-check-<attempt>`). High and Critical findings also appear in the run's **Tests** tab.
+   - Starts in report-only mode. Setting `dependencyCheckFailOnCvss: 7` fails the build on High/Critical ([runbook](runbook.md#security-scans)).
+3. **Database job**
    - Builds the SSDT project into a dacpac and checks that `$(dacpacName).dacpac` exists.
    - Publishes the `database` and `blob` artifacts.
 
@@ -74,7 +79,9 @@ Each deploy stage:
    3. **Each app**:
       1. Copies `ninjectModules.<profile>.xml` to `ninjectModules.xml`.
       2. Zip-deploys the app to App Service.
-      3. **Prod, Web only**: deploys to the `staging` slot, smoke-tests that slot, then swaps it into production.
+      3. **Smoke test** for apps with `smokeTest: true`, in every environment: a direct HTTP 200 on `healthPath`, with no redirect.
+      4. **Prod, Web only**: the deploy goes to the `staging` slot, and the smoke test runs on that slot *before* it is swapped into production.
+4. **Staging only**: after the deploy, an **OWASP ZAP baseline scan** (passive, no attack traffic) of the Web app. Its report (`zap-report-<attempt>`) is ready before anyone approves Production.
 
 Within a run, artifacts are never rebuilt. Production always runs exactly the artifact that passed Staging in the same `release/*` run.
 

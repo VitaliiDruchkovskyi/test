@@ -35,18 +35,20 @@ Deeper detail is in [docs/pipeline/](pipeline/README.md). That folder covers how
 | [`templates/deploy-environment.yml`](../templates/deploy-environment.yml) | One deploy job that every environment shares |
 
 ```
-                       ┌─► development        (from main)
+                       ┌─► development  + smoke test                         (from main)
 PR / push ─► Build ────┤
-                       └─► staging ─► production ─► git tag prod/<build>   (from release/*)
-                                     (approval)
+  (+ OWASP             └─► staging + smoke + ZAP ─► production ─► git tag   (from release/*)
+   Dependency-Check)                               (approval)
 ```
 
-- **Build stage**: it has two parallel jobs.
+- **Build stage**: it has three parallel jobs.
   - **App**: restore, compile, test, publish symbols, then publish each app.
+  - **DependencyScan**: OWASP Dependency-Check on the NuGet packages.
   - **Database**: build the dacpac and collect the blob assets.
   - The outputs are three artifacts that fit any environment: `web`, `database` and `blob`.
-- **Deploy stages**: each stage runs the same template, in this order: database schema, then blob assets, then the apps.
+- **Deploy stages**: each stage runs the same template, in this order: database schema, then blob assets, then the apps, then a smoke test.
   - In production only, the Web app goes through a staging slot, a smoke test and a swap.
+  - Staging also runs an OWASP ZAP baseline scan before Production can be approved.
 
 ---
 
@@ -203,12 +205,51 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
   - The original pipeline is kept unchanged in [docs/task/azure.yml](task/azure.yml).
 - **Why:** the pipeline depends on Azure-side setup that YAML can't express, such as roles, environments and policies. Without documentation, the next person can't run it or fix it.
 
+### Testing and security
+
+#### C25. OWASP Dependency-Check on every build (P5, P10)
+- **Before:** no check for known-vulnerable packages.
+- **After:**
+  - A **DependencyScan** job in the Build stage, running in parallel with App, so the build isn't slower.
+  - It restores the NuGet packages and scans them against the NVD database with OWASP Dependency-Check.
+  - It publishes an HTML/JSON report. High and Critical findings also appear in the **Tests** tab.
+  - The vulnerability database is cached weekly. The free NVD API key is a secret in the variable group `benefitnetflex-build`.
+- **Why:**
+  - Vulnerable and outdated components are OWASP Top 10 **A06**, and the biggest real risk on an old .NET Framework stack.
+  - `dotnet list package --vulnerable` doesn't work with `packages.config`, but Dependency-Check does, through the packages' `.nuspec` files.
+  - It's free, runs on hosted agents, and also runs on PRs, so a vulnerable package is caught before it is merged.
+  - It starts **report-only** (`dependencyCheckFailOnCvss: 11`). After triage, switch to `7` to fail on High/Critical.
+  - The CLI version is pinned for reproducible results.
+
+#### C26. OWASP ZAP baseline scan of Staging before Production (P10)
+- **Before:** no testing of the running application.
+- **After:**
+  - A **ZapBaseline** job in the Staging stage, after the deploy.
+  - It runs the pinned ZAP Docker image on an Ubuntu agent against the Staging Web app's real host name.
+  - It publishes HTML/JSON/XML reports.
+  - It starts **report-only** (`zapFailOnFindings: false`). Warnings mark the stage *partially succeeded*.
+- **Why:**
+  - A baseline scan is **passive**, with no attack traffic, so it is safe and quick on every release. It finds what code scanning can't: missing security headers, insecure cookies, information leaks, mixed content.
+  - It runs before the Production approval, so approvers can read the report first. With the gate on, Production can't start while findings are open.
+  - A ZAP *full* (active) scan sends attack traffic. It is deliberately **not** run on every release, and must never target Production. It belongs in a separate scheduled run against Staging.
+
+#### C27. Smoke test after every deploy, in every environment (P5, P10)
+- **Before:** the smoke test ran only on the production staging slot.
+- **After:** every app with `smokeTest: true` (by default `Web`) is checked after each deploy in development, staging and production. In production, the check still runs on the slot *before* the swap.
+- **Why:**
+  - A broken deploy is caught immediately in every environment, not first in production.
+  - Workers default to `false`, because they may not serve an anonymous page. Turn it on per app once they do.
+  - The check is the same everywhere: the real host name comes from Azure, no redirects are followed, and it retries.
+
 ---
 
 ## 4. Trade-offs and known limits
 
 - **Expand/contract is a team discipline.** The pipeline can block data loss, but it can't make a schema change backward compatible.
 - **The Ninject file copy is a bridge.** Moving profile selection into an app setting is the cleaner end state.
+- **Security scans start in report-only mode.** They report findings but block nothing until `dependencyCheckFailOnCvss` and `zapFailOnFindings` are switched on, after the existing findings are triaged.
+- **ZAP needs network reach and only sees anonymous pages.** Staging must be reachable from hosted agents, or the scan needs a self-hosted agent. Signed-in pages need a ZAP authentication context.
+- **Not covered yet:** static analysis of the C# code (CodeQL or SonarQube), secret scanning, and UI end-to-end tests. They need licence or team decisions ([review.md § 4](pipeline/review.md#4-next-steps)).
 - **The NuGet cache assumes `packages.config`.** After a move to `PackageReference`, remove the restore condition.
 - **Assumptions to confirm before the first run:**
   - Hosting is Azure App Service, and the workers are web apps.
@@ -218,4 +259,4 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
   The full checklist is in [setup.md § 8](pipeline/setup.md#8-first-run-checklist).
 - **Not yet run** against a real Azure DevOps project. Treat the first run as a dry run.
 
-Further improvements are listed in [review.md § 4](pipeline/review.md#4-next-steps): health endpoint, DeployReport before production, security scanning, infrastructure as code.
+Further improvements are listed in [review.md § 4](pipeline/review.md#4-next-steps): health endpoint, DeployReport before production, code and secret scanning, infrastructure as code.
