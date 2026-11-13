@@ -56,6 +56,10 @@ No change to the template is needed.
 
 | Symptom | Likely cause / fix |
 |---|---|
+| `NuGet restore` fails with 401 / 403 | The build identity is missing permission on the feed. It needs **Feed and Upstream Reader (Collaborator)**. For a feed in another project, also check *Limit job authorization scope* ([setup.md § 7](setup.md#7-nuget-feed-and-authorization)). |
+| `NuGet restore` fails with 404 on a package that is new to the project | The feed can't reach nuget.org (outage), or the identity only has *Reader* and can't save from upstream. Once a package is in the feed, later builds no longer depend on nuget.org. |
+| `NuGet restore` fails on an external feed | The NuGet service connection's key or password has expired, or the connection isn't listed in `nuGetServiceConnections`. |
+| Restore gets the wrong package versions after `nuget.config` changes | `nuget.config` is part of the cache key, so the cache refreshes automatically. To force a clean restore, change a `packages.config` file or delete the pipeline cache. |
 | Build fails with no clear error | Download the `logs-<attempt>` artifact and open `build.binlog` in [MSBuild Structured Log Viewer](https://msbuildlog.com/). |
 | `Unit tests` fails with "minimum expected tests not run" | No assemblies matched `*Tests.dll`. Check the pattern and make sure the test projects build in `Release`. |
 | `Publish <App>` fails with an `OutputPath` error | The project doesn't define the `Release|AnyCPU` configuration. The project-level build uses `AnyCPU` without a space. |

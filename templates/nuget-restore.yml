@@ -1,0 +1,61 @@
+# Authenticated NuGet restore for a packages.config solution.
+#
+# Why this exists: public packages are sometimes unavailable (nuget.org outage, package
+# unlisted/deleted, network issues), and some packages come from private feeds that need
+# credentials. All sources are defined in /nuget.config; the main source is an Azure
+# Artifacts feed with nuget.org as an upstream, so every package used once is kept in the
+# feed and stays available even if the public source is down.
+#
+# Steps: install NuGet -> authenticate feeds -> restore cache -> restore with retries.
+# Setup (feed, upstreams, permissions, service connections): docs/pipeline/setup.md § 7.
+parameters:
+- name: solution
+  type: string
+- name: nugetConfigPath
+  type: string
+  default: nuget.config
+- name: packagesDirectory          # where `nuget restore` puts packages: <solution folder>/packages
+  type: string
+- name: cacheKeyFiles              # files whose content changes invalidate the package cache
+  type: string
+  default: '**/packages.config'
+- name: nuGetServiceConnections    # comma-separated NuGet service connections for external
+  type: string                     # authenticated feeds (e.g. a vendor feed); '' if none
+  default: ''
+- name: retryCount                 # retries for transient feed/network errors
+  type: number
+  default: 3
+
+steps:
+- task: NuGetToolInstaller@1
+  displayName: Install NuGet
+  inputs:
+    versionSpec: 6.x
+
+# Gives nuget.exe credentials for:
+#  - every Azure Artifacts feed in this organization listed in nuget.config (build service identity)
+#  - every external feed whose service connection is passed in nuGetServiceConnections
+- task: NuGetAuthenticate@1
+  displayName: Authenticate NuGet feeds
+  ${{ if ne(parameters.nuGetServiceConnections, '') }}:
+    inputs:
+      nuGetServiceConnections: ${{ parameters.nuGetServiceConnections }}
+
+# Valid only while every project uses packages.config. If any project moves to
+# PackageReference, remove the restore condition (obj/project.assets.json is not cached).
+- task: Cache@2
+  displayName: Cache NuGet packages
+  inputs:
+    key: 'nuget | "$(Agent.OS)" | ${{ parameters.nugetConfigPath }} | ${{ parameters.cacheKeyFiles }}'
+    path: ${{ parameters.packagesDirectory }}
+    cacheHitVar: NUGET_CACHE_RESTORED
+
+- pwsh: |
+    nuget restore "${{ parameters.solution }}" -ConfigFile "${{ parameters.nugetConfigPath }}" -NonInteractive -Verbosity normal
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "##vso[task.logissue type=error]NuGet restore failed. Check feed availability and permissions (docs/pipeline/runbook.md, NuGet section)."
+      exit $LASTEXITCODE
+    }
+  displayName: NuGet restore (authenticated)
+  condition: and(succeeded(), ne(variables.NUGET_CACHE_RESTORED, 'true'))
+  retryCountOnTaskFailure: ${{ parameters.retryCount }}

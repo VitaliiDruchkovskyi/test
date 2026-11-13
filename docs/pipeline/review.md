@@ -49,6 +49,7 @@ The Web app deploys to the `staging` slot, is smoke-tested, then swapped in. Thi
 ### Hygiene
 - The agent image (`windows-2025`) and the NuGet major version (`6.x`) are pinned. *(Fixes 4.)*
 - NuGet packages are cached and restore is skipped on a cache hit. *(Fixes 9.)*
+- NuGet restore goes through an authenticated Azure Artifacts feed with nuget.org as upstream ([`templates/nuget-restore.yml`](../../templates/nuget-restore.yml)). Packages stay available during public outages, private feeds work through service connections, and transient failures are retried. It's a step template rather than a separate stage, because a stage runs on a fresh agent and would have to upload and download the whole `packages` folder on every run.
 - The build number is date-based (`yyyy.MM.dd.r`). *(Fixes 10.)*
 - Pipeline Artifacts replace Build Artifacts. *(Fixes 7.)*
 - An MSBuild binlog is published when the build fails. Symbols go to the Azure Artifacts symbol server, for `main` builds only. *(Fixes 6.)*
