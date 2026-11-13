@@ -68,7 +68,7 @@ Keep feature branches short, a few days at most. Hide unfinished features behind
    git push -u origin release/2026.11
    ```
 2. The push starts a run that deploys to **Staging** automatically. QA and UAT happen on Staging.
-3. Production waits for the approval on the `production` environment. On approval, the Web app goes out through the staging slot, swap and smoke test, the workers are deployed, and the commit is tagged `prod/<build number>`.
+3. Production waits for the approval on the `production` environment. On approval, the Web app goes out through the `pre` slot, smoke test, canary and swap, the workers are deployed, and the commit is tagged `prod/<build number>`.
 
 ### Fixing a bug found in Staging or Production ("upstream first")
 1. Fix it in `main` first, with a normal `bugfix/*` PR. This guarantees the fix is never lost in the next release.

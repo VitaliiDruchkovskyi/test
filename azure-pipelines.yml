@@ -424,7 +424,8 @@ stages:
       vmImage: ${{ variables.vmImage }}
       dacpacName: ${{ variables.dacpacName }}
       ninjectProfile: Release
-      useStagingSlot: true
+      useSlot: true
+      slotName: pre                  # production slot; not the 'staging' environment
       healthPath: /                  # must return 200 anonymously, without a redirect (see runbook)
       # Canary (production only): 10% -> 50% of users on the new version, 10 min each,
       # automatic rollback on health or error-rate failure, then swap. enabled: false = plain swap.
@@ -434,7 +435,7 @@ stages:
         stepMinutes: 10
         maxFailedRequestPercent: 2
         minRequests: 50
-        requestFilter: "cloud_RoleName has 'staging'"
+        requestFilter: "cloud_RoleName has 'pre'"
 
   # Mark exactly what is in production: annotated tag prod/<build number> on the built commit.
   # Needs "Contribute" and "Create tag" for the build service identity on the repo (setup.md).

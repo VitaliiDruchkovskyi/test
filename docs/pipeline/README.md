@@ -31,7 +31,7 @@ flowchart LR
   end
   Build -->|main| Dev[Development]
   Build -->|release/*| Stg["Staging<br/>+ OWASP ZAP baseline scan"]
-  Stg -->|approval on environment| Prod["Production<br/>Web: staging slot → smoke test →<br/>canary 10% → 50% → swap<br/>Workers: direct deploy"]
+  Stg -->|approval on environment| Prod["Production<br/>Web: pre slot → smoke test →<br/>canary 10% → 50% → swap<br/>Workers: direct deploy"]
   Prod --> Tag["git tag prod/&lt;build&gt;"]
 ```
 
@@ -80,7 +80,7 @@ Each deploy stage:
       1. Copies `ninjectModules.<profile>.xml` to `ninjectModules.xml`.
       2. Zip-deploys the app to App Service.
       3. **Smoke test** for apps with `smokeTest: true`, in every environment: a direct HTTP 200 on `healthPath`, with no redirect.
-      4. **Prod, Web only**: the deploy goes to the `staging` slot, and the smoke test runs on that slot. Then comes a **canary**: 10% and then 50% of users are routed to the slot, for 10 minutes each. During each step the slot's health is checked every 30 seconds, and the Application Insights failed-request rate is checked at the end. Any failure sends all users back to the current version and stops the run. If every step passes, routing is reset and the slot is swapped into production.
+      4. **Prod, Web only**: the deploy goes to the `pre` slot, and the smoke test runs on that slot. Then comes a **canary**: 10% and then 50% of users are routed to the slot, for 10 minutes each. During each step the slot's health is checked every 30 seconds, and the Application Insights failed-request rate is checked at the end. Any failure sends all users back to the current version and stops the run. If every step passes, routing is reset and the slot is swapped into production.
 4. **Staging only**: after the deploy, an **OWASP ZAP baseline scan** (passive, no attack traffic) of the Web app. Its report (`zap-report-<attempt>`) is ready before anyone approves Production.
 
 Within a run, artifacts are never rebuilt. Production always runs exactly the artifact that passed Staging in the same `release/*` run.
@@ -93,7 +93,7 @@ Within a run, artifacts are never rebuilt. Production always runs exactly the ar
 - **Environment per stage**: `development`, `staging` and `production`.
 - **Ninject profiles**: `App_Data/ninjectModules.<profile>.xml` must exist in each app and be a `Content` item, so that publish includes it.
 - **Build number**: `yyyy.MM.dd.r`, for example `2026.11.13.2`. Use it to refer to a release. Production releases are also tagged in git as `prod/<build number>`.
-- **Slot vs. environment**: `staging` (lowercase) is the Prod Web app's deployment slot. **Staging** is the separate pre-production environment.
+- **Production slot**: the Prod Web app's deployment slot is named **`pre`** (template parameter `slotName`). This keeps it distinct from the separate **`staging`** environment.
 
 ## Assumptions
 

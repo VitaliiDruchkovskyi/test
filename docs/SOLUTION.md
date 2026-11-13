@@ -48,7 +48,7 @@ PR / push ─► Build ────┤
   - **Database**: build the dacpac and collect the blob assets.
   - The outputs are three artifacts that fit any environment: `web`, `database` and `blob`.
 - **Deploy stages**: each stage runs the same template, in this order: database schema, then blob assets, then the apps, then a smoke test.
-  - In production only, the Web app goes through a staging slot, a smoke test, a **canary** (10% → 50% of users) and then a swap.
+  - In production only, the Web app goes through the `pre` slot, a smoke test, a **canary** (10% → 50% of users) and then a swap.
   - Staging also runs an OWASP ZAP baseline scan before Production can be approved.
 
 ---
@@ -151,9 +151,9 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
 #### C17. `zipDeploy` instead of run-from-package
 - **Why:** run-from-package makes `wwwroot` read-only. Legacy ASP.NET apps often write to `App_Data`, and here they also get the Ninject file copied in at deploy time.
 
-#### C18. Production Web: staging slot, then smoke test, then swap; workers deploy directly (P10)
+#### C18. Production Web: `pre` slot, then smoke test, then swap; workers deploy directly (P10)
 - **After:**
-  - In production, the Web app deploys to the `staging` slot, is smoke-tested, then swapped into production.
+  - In production, the Web app deploys to the `pre` slot, is smoke-tested, then swapped into production.
   - `BulkOperationWorker` and `MaintenanceWorker` (`slotSwap: false`) deploy directly.
 - **Why:**
   - Zero-downtime releases for users, with instant rollback: swap back, and the previous version is still in the slot.
@@ -161,11 +161,11 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
 
 #### C19. A smoke test that can't be fooled
 - **After:**
-  - The slot's real host name comes from `az webapp show --slot staging`.
+  - The slot's real host name comes from `az webapp show --slot pre`.
   - Redirects are not followed, and only a direct HTTP 200 passes.
   - The test retries 10 times, 15 seconds apart.
 - **Why:**
-  - Newer App Service apps use unique default host names, so building `<app>-staging.azurewebsites.net` by hand can be wrong.
+  - Newer App Service apps use unique default host names, so building `<app>-pre.azurewebsites.net` by hand can be wrong.
   - Following a redirect to a login page would report a broken deploy as healthy.
 
 ### Security
@@ -235,7 +235,7 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
   - A ZAP *full* (active) scan sends attack traffic. It is deliberately **not** run on every release, and must never target Production. It belongs in a separate scheduled run against Staging.
 
 #### C27. Smoke test after every deploy, in every environment (P5, P10)
-- **Before:** the smoke test ran only on the production staging slot.
+- **Before:** the smoke test ran only on the production slot.
 - **After:** every app with `smokeTest: true` (by default `Web`) is checked after each deploy in development, staging and production. In production, the check still runs on the slot *before* the swap.
 - **Why:**
   - A broken deploy is caught immediately in every environment, not first in production.
@@ -243,7 +243,7 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
   - The check is the same everywhere: the real host name comes from Azure, no redirects are followed, and it retries.
 
 #### C28. Canary release in production: 10% → 50% → swap, with automatic rollback (P10)
-- **Before:** in production, the Web app went to the staging slot, passed a smoke test, then all users moved to the new version at once in the swap.
+- **Before:** in production, the Web app went to the `pre` slot, passed a smoke test, then all users moved to the new version at once in the swap.
 - **After:** between the smoke test and the swap, App Service **traffic routing** sends 10% and then 50% of users to the slot, for 10 minutes each. During each step:
   - The slot's health endpoint is checked every 30 seconds. Three failures in a row trigger a rollback.
   - At the end of the step, the Application Insights failed-request rate of the canary is checked. Above 2% (with at least 50 requests) triggers a rollback.
@@ -257,6 +257,7 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
   - App Service's built-in traffic routing pins each user to one version (cookie), so users don't flip between versions. The built-in `canary` strategy of Azure DevOps deployment jobs only supports Kubernetes and VMs, so Azure CLI steps are used.
   - Routing is cleared *before* the swap, because after a swap the slot holds the old version.
 - **Prerequisites** ([setup.md § 7b](pipeline/setup.md#7b-canary-releases-production-web-app)): both versions serve users at the same time, so the slots need the same `machineKey` (forms auth, anti-forgery and ViewState in .NET Framework), out-of-process session state, production settings on the slot, backward-compatible schema changes, and Application Insights.
+- **Slot name `pre`:** the production slot is called `pre`, not `staging`, so it can't be confused with the `staging` environment (template parameter `slotName`).
 - **On "downtime" with slots:** a swap warms the slot up before switching and doesn't drop connections. A visible blip usually comes from slot-specific settings restarting the app, or from a missing warm-up path. Both are covered in setup.md § 7b.
 
 ---

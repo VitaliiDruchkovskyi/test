@@ -31,8 +31,8 @@ Tests run straight after the compile. They use an explicit assembly pattern, col
 ### The database deploys first and must stay backward compatible
 The dacpac is published with `BlockOnPossibleDataLoss=true` before the apps are deployed. In Prod the old app version keeps serving traffic until the slot swap, so every schema change must work with both the old and the new code. In practice this means **expand/contract migrations**: add the new column, ship code that uses it, and drop the old column in a later release.
 
-### In Prod, only Web uses a staging slot, smoke test and swap
-The Web app deploys to the `staging` slot, is smoke-tested, then swapped in. This gives zero-downtime releases and a one-click rollback (swap back). The workers deploy directly (`slotSwap: false`), so two copies never process the same background jobs at once. Deployment uses `zipDeploy` rather than run-from-package, because run-from-package makes `wwwroot` read-only and legacy apps often write to `App_Data`.
+### In Prod, only Web uses a deployment slot, smoke test and swap
+The Web app deploys to the `pre` slot, is smoke-tested, then swapped in. This gives zero-downtime releases and a one-click rollback (swap back). The workers deploy directly (`slotSwap: false`), so two copies never process the same background jobs at once. Deployment uses `zipDeploy` rather than run-from-package, because run-from-package makes `wwwroot` read-only and legacy apps often write to `App_Data`.
 
 ### Release Flow branching
 `main` deploys to Development. Release branches (`release/*`) deploy to Staging and then Production. Hotfixes go into `main` first and are cherry-picked into the release branch. Development keeps moving while a release is validated, and there is a clean hotfix path. Every environment still receives an artifact built once from one commit. Each Production release is tagged `prod/<build number>` in git. The reasoning and the alternatives considered are in [branching.md](branching.md). *(Fixes 1 and 10.)*
@@ -63,7 +63,7 @@ The first proposal had a few defects. They were fixed in the committed files:
 | Issue in the proposal | Fix |
 |---|---|
 | The dacpac was deployed with the pattern `database/*.dacpac`. If the project references another dacpac, such as `master.dacpac`, the pattern matches more than one file and `SqlAzureDacpacDeployment` fails. | A new variable, `dacpacName`, sets the file. The build checks that the file exists, and the deploy targets it by name. Referenced dacpacs still ship next to it. |
-| The smoke test built the host name as `<app>-staging.azurewebsites.net`. That is wrong for apps created with a *unique default hostname* (`<app>-<hash>.<region>.azurewebsites.net`). | The smoke test now asks Azure for the slot's real host name (`az webapp show --slot staging`). |
+| The smoke test built the host name as `<app>-staging.azurewebsites.net`. That is wrong for apps created with a *unique default hostname* (`<app>-<hash>.<region>.azurewebsites.net`). | The smoke test now asks Azure for the slot's real host name (`az webapp show --slot pre`). |
 | The smoke test followed redirects. On an app behind sign-in, the login page's `200` made a broken deploy look healthy. | Redirects are no longer followed. Only a direct `200` passes. |
 | The `ninjectProfile` parameter existed but no stage set it, so nobody could see where to change it. | Every stage now sets it explicitly. |
 | Display names contained an en-dash (`–`). | Replaced with a plain hyphen. |

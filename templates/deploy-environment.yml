@@ -21,14 +21,17 @@ parameters:
 - name: ninjectProfile             # picks App_Data/ninjectModules.<profile>.xml
   type: string
   default: Release
-- name: useStagingSlot
+- name: useSlot                    # deploy slot apps to a slot first, then swap (production)
   type: boolean
   default: false
+- name: slotName                   # name of that deployment slot; 'pre' so it isn't confused
+  type: string                     # with the separate 'staging' environment
+  default: pre
 - name: healthPath
   type: string
   default: /
-# Canary release for slot apps (only meaningful with useStagingSlot). For each percentage in
-# `steps`, that share of users is routed to the staging slot for `stepMinutes` while the slot's
+# Canary release for slot apps (only meaningful with useSlot). For each percentage in
+# `steps`, that share of users is routed to the slot for `stepMinutes` while the slot's
 # health and the Application Insights failed-request rate are checked. Any failure routes all
 # traffic back to the current production version and fails the run. After the last step: swap.
 - name: canary
@@ -39,7 +42,7 @@ parameters:
     stepMinutes: 10
     maxFailedRequestPercent: 2       # failed-request rate (%) on the canary that triggers rollback
     minRequests: 50                  # fewer canary requests than this = not enough data; health probe only
-    requestFilter: "cloud_RoleName has 'staging'"   # KQL filter selecting the canary slot's requests
+    requestFilter: "cloud_RoleName has 'pre'"       # KQL filter selecting the canary slot's requests
 
 jobs:
 - deployment: Deploy
@@ -84,7 +87,7 @@ jobs:
               --source "$(Pipeline.Workspace)/blob"
               --auth-mode login --overwrite --only-show-errors
 
-        # 3. Apps: select environment config, deploy (to staging slot in prod).
+        # 3. Apps: select environment config, deploy (to the slot in prod).
         - ${{ each app in parameters.webApps }}:
           - pwsh: |
               $dir = "$(Pipeline.Workspace)/web/${{ app.name }}/App_Data"
@@ -97,10 +100,10 @@ jobs:
               azureSubscription: ${{ parameters.serviceConnection }}
               appType: webApp
               appName: $(appServicePrefix)-${{ lower(app.name) }}
-              ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+              ${{ if and(parameters.useSlot, eq(app.slotSwap, true)) }}:
                 deployToSlotOrASE: true
                 resourceGroupName: $(resourceGroupName)
-                slotName: staging
+                slotName: ${{ parameters.slotName }}
               package: $(Pipeline.Workspace)/web/${{ app.name }}
               deploymentMethod: zipDeploy   # not runFromPackage: legacy apps may write to App_Data
 
@@ -109,15 +112,15 @@ jobs:
           # The real host name comes from Azure (apps with "unique default hostname" don't
           # follow <app>.azurewebsites.net). Redirects are not followed, so a redirect to a
           # login page counts as a failure.
-          - ${{ if or(eq(app.smokeTest, true), and(parameters.useStagingSlot, eq(app.slotSwap, true))) }}:
+          - ${{ if or(eq(app.smokeTest, true), and(parameters.useSlot, eq(app.slotSwap, true))) }}:
             - task: AzureCLI@2
-              ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
-                displayName: ${{ app.name }} - smoke test staging slot
+              ${{ if and(parameters.useSlot, eq(app.slotSwap, true)) }}:
+                displayName: ${{ app.name }} - smoke test slot '${{ parameters.slotName }}'
               ${{ else }}:
                 displayName: ${{ app.name }} - smoke test
               env:
-                ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
-                  SMOKE_SLOT: staging
+                ${{ if and(parameters.useSlot, eq(app.slotSwap, true)) }}:
+                  SMOKE_SLOT: ${{ parameters.slotName }}
               inputs:
                 azureSubscription: ${{ parameters.serviceConnection }}
                 scriptType: pscore
@@ -138,8 +141,8 @@ jobs:
                   Write-Error "Smoke test failed: $url"
                   exit 1
 
-          # Canary: ramp real users onto the staging slot step by step, then swap.
-          - ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true), eq(parameters.canary.enabled, true)) }}:
+          # Canary: ramp real users onto the slot step by step, then swap.
+          - ${{ if and(parameters.useSlot, eq(app.slotSwap, true), eq(parameters.canary.enabled, true)) }}:
             - ${{ each pct in parameters.canary.steps }}:
               - task: AzureCLI@2
                 displayName: ${{ app.name }} - canary ${{ pct }}% for ${{ parameters.canary.stepMinutes }} min
@@ -156,12 +159,12 @@ jobs:
                       exit 1
                     }
 
-                    az webapp traffic-routing set -g $rg -n $app --distribution staging=${{ pct }} --only-show-errors | Out-Null
+                    az webapp traffic-routing set -g $rg -n $app --distribution ${{ parameters.slotName }}=${{ pct }} --only-show-errors | Out-Null
                     if ($LASTEXITCODE -ne 0) { Rollback "could not set traffic routing" }
-                    Write-Host "Routing ${{ pct }}% of users to the staging slot for ${{ parameters.canary.stepMinutes }} minutes."
+                    Write-Host "Routing ${{ pct }}% of users to slot '${{ parameters.slotName }}' for ${{ parameters.canary.stepMinutes }} minutes."
 
                     # 1. Health probe on the slot every 30 s; 3 failures in a row = rollback.
-                    $hostName = az webapp show -g $rg -n $app --slot staging --query defaultHostName -o tsv
+                    $hostName = az webapp show -g $rg -n $app --slot ${{ parameters.slotName }} --query defaultHostName -o tsv
                     $url = "https://$hostName${{ parameters.healthPath }}"
                     $end = (Get-Date).AddMinutes(${{ parameters.canary.stepMinutes }}); $bad = 0
                     while ((Get-Date) -lt $end) {
@@ -193,7 +196,7 @@ jobs:
 
           # Clear routing BEFORE the swap: after a swap the slot holds the OLD version, so any
           # remaining routing would send users back to it.
-          - ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+          - ${{ if and(parameters.useSlot, eq(app.slotSwap, true)) }}:
             - task: AzureCLI@2
               displayName: ${{ app.name }} - reset traffic routing
               inputs:
@@ -203,19 +206,19 @@ jobs:
                 inlineScript: az webapp traffic-routing clear -g "$(resourceGroupName)" -n "$(appServicePrefix)-${{ lower(app.name) }}" --only-show-errors
 
             - task: AzureAppServiceManage@0
-              displayName: ${{ app.name }} - swap staging -> production
+              displayName: ${{ app.name }} - swap ${{ parameters.slotName }} -> production
               inputs:
                 azureSubscription: ${{ parameters.serviceConnection }}
                 Action: Swap Slots
                 WebAppName: $(appServicePrefix)-${{ lower(app.name) }}
                 ResourceGroupName: $(resourceGroupName)
-                SourceSlot: staging
+                SourceSlot: ${{ parameters.slotName }}
 
         # Safety net: if anything failed or the run was cancelled mid-canary, make sure no
-        # users stay routed to the staging slot.
+        # users stay routed to the slot.
         - ${{ if eq(parameters.canary.enabled, true) }}:
           - ${{ each app in parameters.webApps }}:
-            - ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+            - ${{ if and(parameters.useSlot, eq(app.slotSwap, true)) }}:
               - task: AzureCLI@2
                 displayName: ${{ app.name }} - clear traffic routing (on failure)
                 condition: or(failed(), canceled())

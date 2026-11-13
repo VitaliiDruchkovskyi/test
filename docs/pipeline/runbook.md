@@ -28,7 +28,7 @@ To find what is in Production: `git describe --tags --match "prod/*" --abbrev=0 
 Never push directly to `release/*`, and never merge `release/*` back into `main`.
 
 ### What happens during a production canary
-After the Web app is on the `staging` slot and its smoke test passes:
+After the Web app is on the `pre` slot and its smoke test passes:
 
 | Step | Users on the new version | Duration | Moves on when |
 |---|---|---|---|
@@ -47,14 +47,14 @@ To change the steps, duration or thresholds, edit the `canary` block on the Prod
 | What | How |
 |---|---|
 | **Web (Prod), during the canary** | Automatic. Routing is cleared and nobody stays on the new version. By hand: `az webapp traffic-routing clear -g <rg> -n <prefix>-web`, or cancel the run. |
-| **Web (Prod), after the swap** | Swap the slots back: in the Azure portal, go to App Service › Deployment slots › Swap, or run `az webapp deployment slot swap -g <rg> -n <prefix>-web --slot staging --target-slot production`. After a swap, the previous version is still in `staging`. |
+| **Web (Prod), after the swap** | Swap the slots back: in the Azure portal, go to App Service › Deployment slots › Swap, or run `az webapp deployment slot swap -g <rg> -n <prefix>-web --slot pre --target-slot production`. After a swap, the previous version is still in `pre`. |
 | **Workers** | Re-run the Prod stage of the last good release run: filter runs by the `released-to-prod` tag. The workers have no slot. |
 | **Database** | A dacpac can't be rolled back automatically. This is why schema changes must be backward compatible (expand/contract): the previous app version keeps working against the new schema, so rolling back the app is enough. |
 
 ## Adding a new deployable app
 
 1. Add an entry to the `webApps` parameter in `azure-pipelines.yml`, with `name`, `project` and `slotSwap`.
-2. Create `<appServicePrefix>-<lower(name)>` in every environment. If `slotSwap: true`, also create a `staging` slot in Prod.
+2. Create `<appServicePrefix>-<lower(name)>` in every environment. If `slotSwap: true`, also create a `pre` slot in Prod.
 3. Make sure the project ships the `App_Data/ninjectModules.<profile>.xml` files as Content.
 
 No change to the template is needed.
@@ -102,12 +102,12 @@ No change to the template is needed.
 | `select ninject profile` fails | `ninjectModules.<profile>.xml` is not in the published output. Set its Build Action to Content. |
 | `Upload blob assets` returns 403 | The service connection identity is missing `Storage Blob Data Contributor`. Role assignments can take a few minutes to apply. |
 | Smoke test fails with HTTP 302 | `healthPath` redirects, for example to a login page. Point it at an anonymous endpoint that returns 200. |
-| Smoke test fails with a timeout | The app didn't start. In Prod, that means the staging slot, and production is unaffected because nothing has been swapped. Check the app's log stream and app settings. In Development or Staging, the new version is already live in that environment. Fix it, or re-run the last good run's stage. |
+| Smoke test fails with a timeout | The app didn't start. In Prod, that means the `pre` slot, and production is unaffected because nothing has been swapped. Check the app's log stream and app settings. In Development or Staging, the new version is already live in that environment. Fix it, or re-run the last good run's stage. |
 | `Run OWASP Dependency-Check` is very slow or times out | The `nvdApiKey` secret is missing or invalid, or the vulnerability-database cache was evicted. Check the `benefitnetflex-build` variable group. The first run each week refreshes the cache. |
 | `Run OWASP Dependency-Check` fails with CVSS ≥ N | The gate is on (`dependencyCheckFailOnCvss` below 11) and a package has a known vulnerability. Upgrade the package, or suppress a confirmed false positive with a reason. |
 | `Run ZAP baseline scan` exits with code 3 | ZAP couldn't run or couldn't reach the site. Check that Staging is reachable from hosted agents ([setup.md § 7a](setup.md#7a-security-scans-prerequisites)) and that the Docker image tag exists. |
 | Staging stage shows *partially succeeded* | ZAP reported warnings in report-only mode. Read the `zap-report` artifact. Production can still be approved. |
-| `canary N%` fails: "health probe failed 3 times" | The new version stopped answering 200 on `healthPath` under real traffic. Check the `staging` slot's logs. Users are already back on the previous version. |
+| `canary N%` fails: "health probe failed 3 times" | The new version stopped answering 200 on `healthPath` under real traffic. Check the `pre` slot's logs. Users are already back on the previous version. |
 | `canary N%` fails: "failed-request rate … above 2%" | The new version returns errors for real users. Check failures in Application Insights, filtered to the slot. Users are already back on the previous version. |
 | `canary N%` warns: "Only 0 canary requests" | `canary.requestFilter` doesn't match the slot's `cloud_RoleName`, or there was very little traffic. Fix the filter ([setup.md § 7b](setup.md#7b-canary-releases-production-web-app)). Until then, the canary is judged by the health probe only. |
 | `canary N%` fails: "could not query Application Insights" | The prod service connection is missing **Monitoring Reader** on Application Insights, or `appInsightsName` / `appInsightsResourceGroup` is wrong. |
