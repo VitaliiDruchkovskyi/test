@@ -52,9 +52,9 @@ The Web app deploys to the `staging` slot, is smoke-tested, then swapped in. Thi
 - `NuGetAuthenticate@1` runs before restore, so authenticated feeds work without stored secrets: Azure Artifacts through the build identity, external feeds through NuGet service connections (`nuGetServiceConnections` parameter). Together with an Azure Artifacts feed that has nuget.org as upstream, packages stay available during public outages ([setup.md § 7](setup.md#7-nuget-authorization)).
 - The build number is date-based (`yyyy.MM.dd.r`). *(Fixes 10.)*
 - Pipeline Artifacts replace Build Artifacts. *(Fixes 7.)*
-- An MSBuild binlog is published when the build fails. Symbols go to the Azure Artifacts symbol server, for `main` builds only. *(Fixes 6.)*
+- An MSBuild binlog is published when the build fails. Symbols go to the Azure Artifacts symbol server, for `main` and `release/*` builds only. *(Fixes 6.)*
 - All paths are explicit and use predefined variables. *(Fixes 8.)*
-- PR validation runs through a branch policy. *(Fixes 3. See [setup.md](setup.md#6-branch-policy-pr-validation).)*
+- PR validation runs through a branch policy. *(Fixes 3. See [setup.md](setup.md#6-branch-policies-pr-validation).)*
 
 ## 3. Corrections made while adding the proposal to the repo
 

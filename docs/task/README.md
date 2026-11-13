@@ -20,6 +20,8 @@ This folder holds the original assignment and its input, kept as reference. The 
 
 ## Where each part is answered
 
+All three parts are answered in one document, [docs/SOLUTION.md](../SOLUTION.md). The table below points to the detailed docs.
+
 | Part | Answer |
 |---|---|
 | 1. Problems in the pipeline | [docs/pipeline/review.md § 1](../pipeline/review.md#1-problems-in-the-legacy-pipeline) |

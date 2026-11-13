@@ -12,4 +12,6 @@ This repository holds the modernised Azure Pipelines definition for BenefitNetFl
 | [`docs/pipeline/`](docs/pipeline/README.md) | Documentation: how it works, the review of the old pipeline and the design decisions, setup, runbook |
 | [`docs/task/`](docs/task/README.md) | The original assignment and the original build-only pipeline ([`azure.yml`](docs/task/azure.yml)), kept as reference |
 
-Start with [docs/pipeline/README.md](docs/pipeline/README.md). Before the first run, work through [docs/pipeline/setup.md](docs/pipeline/setup.md).
+**Assignment answer** (problems, improved pipeline and the reason for each change): [docs/SOLUTION.md](docs/SOLUTION.md).
+
+To learn how the pipeline works, start with [docs/pipeline/README.md](docs/pipeline/README.md). Before the first run, work through [docs/pipeline/setup.md](docs/pipeline/setup.md).
