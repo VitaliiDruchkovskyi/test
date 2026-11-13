@@ -1,10 +1,16 @@
-# BenefitNetFlex - build once, deploy many (Dev -> Test -> Prod)
+# BenefitNetFlex - build once, deploy many
 #
-# Docs: docs/pipeline/README.md (how it works), docs/pipeline/setup.md (one-time
-# Azure DevOps / Azure setup), docs/pipeline/runbook.md (day-to-day operations).
+# Branching (Release Flow, see docs/pipeline/branching.md):
+#   feature/*, bugfix/*  -> PR into main   -> Build only (validation)
+#   main                 -> Build -> Development
+#   release/*            -> Build -> Staging -> Production (approval) -> git tag prod/<build>
+#
+# Docs: docs/pipeline/README.md (how it works), docs/pipeline/branching.md (git strategy),
+# docs/pipeline/setup.md (one-time setup), docs/pipeline/runbook.md (operations).
 #
 # PR validation: Azure Repos ignores the YAML `pr:` keyword. Add a "Build validation"
-# branch policy on main that points at this pipeline. On PR runs only the Build stage runs.
+# branch policy on main and on release/* that points at this pipeline.
+# On PR runs only the Build stage runs.
 #
 # Approvals / business-hours / exclusive-lock checks live on the Environments
 # (Pipelines > Environments > benefitnetflex-<env> > Approvals and checks), not in YAML.
@@ -14,7 +20,7 @@ name: $(Date:yyyy.MM.dd)$(Rev:.r)
 trigger:
   batch: true                       # don't queue one run per push during busy merges
   branches:
-    include: [ main ]
+    include: [ main, release/* ]
   paths:
     exclude: [ '**/*.md', docs/** ]
 
@@ -40,7 +46,8 @@ variables:
   dacpacName: BenefitNetFlex.DataBase      # file name (without .dacpac) of the database to deploy
   buildConfiguration: Release
   vmImage: windows-2025             # pinned on purpose; bump deliberately, not via windows-latest
-  isDeployable: $[and(eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))]
+  # main or release/*, and not a PR build. Gates symbol publishing; stage conditions route by branch.
+  isDeployable: $[and(or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')), ne(variables['Build.Reason'], 'PullRequest'))]
 
 stages:
 # ---------------------------------------------------------------- BUILD
@@ -190,7 +197,13 @@ stages:
         artifact: blob
 
 # ---------------------------------------------------------------- DEPLOY
+# main      -> Dev
+# release/* -> Staging -> Prod -> tag
+# Each stage also has a "Branch control" check on its Environment as a second line of
+# defence (see docs/pipeline/setup.md), so editing these conditions alone can't reach Prod.
+
 - stage: Dev
+  displayName: Development
   dependsOn: Build
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
   variables:
@@ -205,22 +218,26 @@ stages:
       dacpacName: ${{ variables.dacpacName }}
       ninjectProfile: Release        # change to e.g. Dev once App_Data/ninjectModules.Dev.xml exists
 
-- stage: Test
-  dependsOn: Dev
+- stage: Staging
+  displayName: Staging
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
   variables:
-  - group: benefitnetflex-test
+  - group: benefitnetflex-staging
   jobs:
   - template: templates/deploy-environment.yml
     parameters:
-      environment: benefitnetflex-test
-      serviceConnection: sc-benefitnetflex-test
+      environment: benefitnetflex-staging
+      serviceConnection: sc-benefitnetflex-staging
       webApps: ${{ parameters.webApps }}
       vmImage: ${{ variables.vmImage }}
       dacpacName: ${{ variables.dacpacName }}
       ninjectProfile: Release
 
 - stage: Prod
-  dependsOn: Test
+  displayName: Production
+  dependsOn: Staging
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
   variables:
   - group: benefitnetflex-prod
   jobs:
@@ -234,3 +251,25 @@ stages:
       ninjectProfile: Release
       useStagingSlot: true
       healthPath: /                  # must return 200 anonymously, without a redirect (see runbook)
+
+  # Mark exactly what is in production: annotated tag prod/<build number> on the built commit.
+  # Needs "Contribute" and "Create tag" for the build service identity on the repo (setup.md).
+  - job: TagRelease
+    displayName: Tag released commit
+    dependsOn: Deploy
+    pool:
+      vmImage: ${{ variables.vmImage }}
+    steps:
+    - checkout: self
+      fetchDepth: 1
+      persistCredentials: true
+
+    - pwsh: |
+        $tag = "prod/$(Build.BuildNumber)"
+        git -c user.name="Azure Pipelines" -c user.email="azure-pipelines@noreply.local" `
+          tag -a $tag "$(Build.SourceVersion)" -m "Released to production from $(Build.SourceBranchName), run $(Build.BuildNumber)"
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        git push origin "refs/tags/$tag"
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        Write-Host "##vso[build.addbuildtag]released-to-prod"
+      displayName: Tag commit prod/<build number>

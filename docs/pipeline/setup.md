@@ -1,12 +1,12 @@
 # One-time setup
 
-Do these steps in Azure and Azure DevOps before the pipeline's first run. Repeat steps 1–4 for each environment (`dev`, `test`, `prod`).
+Do these steps in Azure and Azure DevOps before the pipeline's first run. Repeat steps 1–4 for each environment (`dev`, `staging`, `prod`).
 
 ## 1. Azure resources (per environment)
 
 | Resource | Name / requirement |
 |---|---|
-| App Service: Web | `<appServicePrefix>-web`. **Prod also needs a deployment slot named `staging`.** |
+| App Service: Web | `<appServicePrefix>-web`. **Prod also needs a deployment slot named `staging`.** This is the slot that is swapped into production. It is not the Staging environment |
 | App Service: BulkOperationWorker | `<appServicePrefix>-bulkoperationworker` |
 | App Service: MaintenanceWorker | `<appServicePrefix>-maintenanceworker` |
 | Azure SQL Database | `<sqlServerName>` / `<sqlDatabaseName>`, with Entra ID authentication enabled on the server |
@@ -18,7 +18,7 @@ Set **Always On** for the worker apps, otherwise App Service unloads them when i
 
 Create one Azure Resource Manager service connection per environment. Use the **Workload identity federation** auth type; it needs no secret.
 
-- Names: `sc-benefitnetflex-dev`, `sc-benefitnetflex-test`, `sc-benefitnetflex-prod`
+- Names: `sc-benefitnetflex-dev`, `sc-benefitnetflex-staging`, `sc-benefitnetflex-prod`
 - Scope: that environment's resource group only.
 - Under **Security**, grant pipeline permission to this pipeline only. Don't select "Grant access permission to all pipelines".
 
@@ -33,7 +33,7 @@ Give each connection's identity these roles:
 
 ## 3. Variable groups
 
-Go to **Pipelines › Library**. Create `benefitnetflex-dev`, `benefitnetflex-test` and `benefitnetflex-prod`. Link them to Key Vault if your policy requires it.
+Go to **Pipelines › Library**. Create `benefitnetflex-dev`, `benefitnetflex-staging` and `benefitnetflex-prod`. Link them to Key Vault if your policy requires it.
 
 | Variable | Example (prod) |
 |---|---|
@@ -48,25 +48,36 @@ Grant pipeline permission to this pipeline only.
 
 ## 4. Environments
 
-Go to **Pipelines › Environments** and create `benefitnetflex-dev`, `benefitnetflex-test` and `benefitnetflex-prod`. Recommended checks:
+Go to **Pipelines › Environments** and create `benefitnetflex-dev`, `benefitnetflex-staging` and `benefitnetflex-prod`. Recommended checks:
 
 | Environment | Checks |
 |---|---|
-| dev | none |
-| test | Exclusive lock (optional) |
-| prod | **Approvals** (release managers, not the person who queued the run), **Business hours**, **Exclusive lock**, **Branch control** (`refs/heads/main` only) |
+| dev | **Branch control**: `refs/heads/main` |
+| staging | **Branch control**: `refs/heads/release/*`. **Exclusive lock**, so a newer release run waits for the current one |
+| prod | **Branch control**: `refs/heads/release/*`. **Approvals** (release managers, not the person who queued the run). **Business hours**. **Exclusive lock** |
 
-## 5. Symbols
+Branch control backs up the stage conditions in the YAML. Even if someone edits the conditions, Production only accepts runs from a release branch. See [branching.md](branching.md).
 
-The `PublishSymbols@2` task with `SymbolServerType: TeamServices` publishes to the Azure Artifacts symbol server. Make sure Azure Artifacts is enabled for the project and that the build service identity can publish symbols.
+## 5. Symbols and git tags
 
-## 6. Branch policy (PR validation)
+- **Symbols**: the `PublishSymbols@2` task with `SymbolServerType: TeamServices` publishes to the Azure Artifacts symbol server. Make sure Azure Artifacts is enabled for the project and that the build service identity can publish symbols.
+- **Git tags**: after a successful Production deploy, the `TagRelease` job pushes the tag `prod/<build number>`. Go to **Project settings › Repositories › BenefitNetFlex › Security**. For the `<Project> Build Service (<Org>)` identity, set **Contribute** = Allow and **Create tag** = Allow. Don't grant **Force push**.
+- **Protect the tags**: restrict who can create or delete `prod/*` tags manually, through repository security or a tag policy, so only the pipeline writes them.
 
-Azure Repos ignores the YAML `pr:` keyword. Go to **Repos › Branches › main › Branch policies › Build validation** and add this pipeline:
+## 6. Branch policies (PR validation)
 
-- Trigger: Automatic
-- Policy requirement: Required
-- Build expiration: Immediately when `main` is updated
+Azure Repos ignores the YAML `pr:` keyword. Set up the policies under **Repos › Branches**. For `release/*`, use **Branch policies** on the folder pattern: *Add branch protection* › `release/*`.
+
+| Policy | `main` | `release/*` |
+|---|---|---|
+| Require a minimum number of reviewers | 2 (1 for small teams). Reset votes on new pushes | 1, from the release managers group |
+| Check for linked work items | Required | Required |
+| Check for comment resolution | Required | Required |
+| Limit merge types | **Squash merge** only | Squash merge or rebase. These PRs carry cherry-picks |
+| Build validation (this pipeline) | Required. Expires immediately when `main` is updated | Required |
+| Who can push | Nobody directly. Everything goes through a PR | Nobody directly. Release managers create the branch |
+
+Branch security: allow **Create branch** under `release/` only for the release managers group. Deny **Force push** on `main` and `release/*` for everyone.
 
 On PR runs only the Build stage executes; the deploy stages are skipped.
 
@@ -82,4 +93,4 @@ Check these against the real solution before you queue the first run:
 - [ ] The projects' .NET Framework targeting pack is installed on the `windows-2025` image. Check the image's software list. If it isn't, pin `vmImage` to `windows-2022`.
 - [ ] Prod `healthPath` returns **200 without a redirect** for an anonymous request on the staging slot.
 - [ ] If the old release process ran hand-written SQL scripts from the database folder, add them to the `database` artifact and a step for them. Only the dacpac is shipped now.
-- [ ] Run the pipeline once with only Dev wired up (or approve Test/Prod only after Dev succeeds), and treat that first run as a dry run.
+- [ ] Treat the first run as a dry run. Merge to `main` and verify Development. Then cut a first `release/*` branch and verify Staging before approving Production.

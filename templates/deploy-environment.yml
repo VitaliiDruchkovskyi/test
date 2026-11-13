@@ -1,5 +1,5 @@
 # Deploys one environment from the artifacts produced by the Build stage.
-# Used by the Dev, Test and Prod stages in azure-pipelines.yml - keep environments identical
+# Used by the Dev, Staging and Prod stages in azure-pipelines.yml - keep environments identical
 # by changing this file, not by copy-pasting steps into a stage.
 #
 # Expects these variables (from the stage's variable group, ideally Key Vault-linked):

@@ -20,7 +20,7 @@ This review covers the legacy pipeline ([docs/task/azure.yml](../task/azure.yml)
 ## 2. Key decisions
 
 ### Build once, deploy many
-The Build stage produces three environment-neutral artifacts: `web`, `database` and `blob`. Every `ninjectModules.*.xml` variant ships in `web`, and the deploy stage picks one per environment (`ninjectProfile`). Dev, Test and Prod all use one template, `templates/deploy-environment.yml`, so they can't drift apart. *(Fixes 1 and 2.)*
+The Build stage produces three environment-neutral artifacts: `web`, `database` and `blob`. Every `ninjectModules.*.xml` variant ships in `web`, and the deploy stage picks one per environment (`ninjectProfile`). Development, Staging and Production all use one template, `templates/deploy-environment.yml`, so they can't drift apart. *(Fixes 1 and 2.)*
 
 ### One folder publish per app instead of one Web Deploy package for the whole solution
 The solution is compiled once. Each app is then published to its own folder with `BuildProjectReferences=false`, so nothing is rebuilt. The existing precompile and merge settings (`PrecompileBeforePublish`, `WDPMergeOption`, `ContentAssemblyName=PagesAndControls`) are kept, so runtime behaviour doesn't change. The project-level builds use the platform `AnyCPU`, without a space, because `Any CPU` breaks `OutputPath` when you build a `.csproj` directly. *(Fixes 7.)*
@@ -33,6 +33,9 @@ The dacpac is published with `BlockOnPossibleDataLoss=true` before the apps are 
 
 ### In Prod, only Web uses a staging slot, smoke test and swap
 The Web app deploys to the `staging` slot, is smoke-tested, then swapped in. This gives zero-downtime releases and a one-click rollback (swap back). The workers deploy directly (`slotSwap: false`), so two copies never process the same background jobs at once. Deployment uses `zipDeploy` rather than run-from-package, because run-from-package makes `wwwroot` read-only and legacy apps often write to `App_Data`.
+
+### Release Flow branching
+`main` deploys to Development. Release branches (`release/*`) deploy to Staging and then Production. Hotfixes go into `main` first and are cherry-picked into the release branch. Development keeps moving while a release is validated, and there is a clean hotfix path. Every environment still receives an artifact built once from one commit. Each Production release is tagged `prod/<build number>` in git. The reasoning and the alternatives considered are in [branching.md](branching.md). *(Fixes 1 and 10.)*
 
 ### Security is handled outside the YAML
 - Service connections use **workload identity federation**, so no client secrets are stored or rotated.
@@ -68,7 +71,7 @@ The first proposal had a few defects. They were fixed in the committed files:
 
 1. **Remove the config-file swap entirely.** Choose the Ninject module set from an App Service app setting at startup, for example `NinjectProfile=Prod`. The pipeline step then goes away, and config lives only in App Service settings and Key Vault.
 2. **Move from `packages.config` to `PackageReference`.** This enables `packages.lock.json`, deterministic restores, `dotnet list package --vulnerable`, and a simpler cache key. Then drop the restore condition, because the cache no longer covers `obj/project.assets.json`.
-3. **Add a dacpac DeployReport before Prod.** Run `SqlPackage /Action:DeployReport` against Prod in the Test stage and attach the report to the Prod approval.
+3. **Add a dacpac DeployReport before Prod.** Run `SqlPackage /Action:DeployReport` against Prod in the Staging stage and attach the report to the Prod approval.
 4. **Add a dedicated `/health` endpoint** that checks the database and dependencies, is anonymous, and doesn't redirect. Point `healthPath` at it, and use it for App Service Health check too.
 5. **Run security scanning in the Build stage.** Options are Microsoft Security DevOps or GitHub Advanced Security for Azure DevOps (dependency, secret and code scanning).
 6. **Define the infrastructure as code** with Bicep: App Services, slots, SQL, storage and role assignments. This keeps the assumptions in [setup.md](setup.md) reproducible.

@@ -6,6 +6,7 @@ This folder documents the build-to-release pipeline for BenefitNetFlex (.NET Fra
 |---|---|
 | [README.md](README.md) (this file) | How the pipeline works: stages, artifacts, flow |
 | [review.md](review.md) | Problems in the legacy pipeline and the reasoning behind the new design |
+| [branching.md](branching.md) | Git strategy (Release Flow): which branch deploys where, releases, hotfixes |
 | [setup.md](setup.md) | One-time setup in Azure DevOps and Azure: service connections, environments, variable groups, roles, branch policy |
 | [runbook.md](runbook.md) | Day-to-day operations: releasing, rollback, adding an app, troubleshooting |
 | [../task/](../task/README.md) | The original assignment and the original build-only pipeline ([azure.yml](../task/azure.yml)), kept as reference |
@@ -14,7 +15,7 @@ This folder documents the build-to-release pipeline for BenefitNetFlex (.NET Fra
 
 | File | Purpose |
 |---|---|
-| [`/azure-pipelines.yml`](../../azure-pipelines.yml) | Pipeline entry point: trigger, the app list, the Build stage, and the Dev, Test and Prod stages |
+| [`/azure-pipelines.yml`](../../azure-pipelines.yml) | Pipeline entry point: trigger, the app list, the Build stage, and the Dev, Staging and Prod stages |
 | [`/templates/deploy-environment.yml`](../../templates/deploy-environment.yml) | Deploys one environment. All three deploy stages use it, so environments can't drift apart |
 
 ## Flow
@@ -27,14 +28,15 @@ flowchart LR
     D["Database job<br/>build dacpac, collect blob assets"] --> DB[(database)]
     D --> B[(blob)]
   end
-  Build -->|main only| Dev[Dev]
-  Dev --> Test[Test]
-  Test -->|approval on environment| Prod["Prod<br/>Web: staging slot → smoke test → swap<br/>Workers: direct deploy"]
+  Build -->|main| Dev[Development]
+  Build -->|release/*| Stg[Staging]
+  Stg -->|approval on environment| Prod["Production<br/>Web: staging slot → smoke test → swap<br/>Workers: direct deploy"]
+  Prod --> Tag["git tag prod/&lt;build&gt;"]
 ```
 
 ### Build stage
 
-It runs on every push to `main` and, through the branch policy, on every pull request.
+It runs on every push to `main` or `release/*` and, through the branch policies, on every pull request into them.
 
 The **App** and **Database** jobs run in parallel.
 
@@ -51,9 +53,18 @@ The **App** and **Database** jobs run in parallel.
 
 All artifacts are environment-neutral. Every `ninjectModules.*.xml` variant ships, and the deploy stage chooses one.
 
-### Deploy stages (Dev → Test → Prod)
+### Deploy stages
 
-They run only for non-PR builds of `main`, in order. Each stage:
+Which stages run depends on the branch (see [branching.md](branching.md)):
+
+| Branch | Stages after Build |
+|---|---|
+| Pull request | none |
+| `main` | **Development** |
+| `release/*` | **Staging** → **Production** (approval) → tag `prod/<build number>` |
+| anything else | none |
+
+Each deploy stage:
 
 1. Loads its variable group (`benefitnetflex-<env>`).
 2. Runs a deployment job against the Azure DevOps Environment `benefitnetflex-<env>`. Approvals and checks configured on the environment pause the run here.
@@ -65,16 +76,17 @@ They run only for non-PR builds of `main`, in order. Each stage:
       2. Zip-deploys the app to App Service.
       3. **Prod, Web only**: deploys to the `staging` slot, smoke-tests that slot, then swaps it into production.
 
-The same artifact moves from Dev to Prod. A Prod release always runs bits that already passed Dev and Test.
+Within a run, artifacts are never rebuilt. Production always runs exactly the artifact that passed Staging in the same `release/*` run.
 
 ## Conventions the pipeline relies on
 
 - **App Service name**: `<appServicePrefix>-<lower(app name)>`, for example `bnf-prod-web` or `bnf-prod-bulkoperationworker`.
-- **Variable group per environment**: `benefitnetflex-dev`, `benefitnetflex-test` and `benefitnetflex-prod`. For the required variables, see [setup.md](setup.md#3-variable-groups).
+- **Variable group per environment**: `benefitnetflex-dev`, `benefitnetflex-staging` and `benefitnetflex-prod`. For the required variables, see [setup.md](setup.md#3-variable-groups).
 - **Service connection per environment**: `sc-benefitnetflex-<env>`.
 - **Environment per stage**: `benefitnetflex-<env>`.
 - **Ninject profiles**: `App_Data/ninjectModules.<profile>.xml` must exist in each app and be a `Content` item, so that publish includes it.
-- **Build number**: `yyyy.MM.dd.r`, for example `2026.11.13.2`. Use it to refer to a release.
+- **Build number**: `yyyy.MM.dd.r`, for example `2026.11.13.2`. Use it to refer to a release. Production releases are also tagged in git as `prod/<build number>`.
+- **Slot vs. environment**: `staging` (lowercase) is the Prod Web app's deployment slot. **Staging** is the separate pre-production environment.
 
 ## Assumptions
 

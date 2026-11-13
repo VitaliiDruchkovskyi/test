@@ -25,3 +25,4 @@ This folder holds the original assignment and its input, kept as reference. The 
 | 1. Problems in the pipeline | [docs/pipeline/review.md § 1](../pipeline/review.md#1-problems-in-the-legacy-pipeline) |
 | 2. Improved pipeline | [azure-pipelines.yml](../../azure-pipelines.yml), [templates/deploy-environment.yml](../../templates/deploy-environment.yml) |
 | 3. Decisions | [docs/pipeline/review.md § 2–4](../pipeline/review.md#2-key-decisions), plus [setup](../pipeline/setup.md) and [runbook](../pipeline/runbook.md) |
+| Git strategy (Development → Staging → Production) | [docs/pipeline/branching.md](../pipeline/branching.md) |

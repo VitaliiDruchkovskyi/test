@@ -2,19 +2,37 @@
 
 ## Releasing
 
-1. Merge a PR into `main`. The pipeline starts automatically. With `batch: true`, pushes that arrive while a run is in progress are combined into the next run.
-2. Dev and Test deploy automatically after the build succeeds.
-3. Prod waits for the approval configured on the `benefitnetflex-prod` environment. Approvers can see the build number (`yyyy.MM.dd.r`) and the commits it contains.
-4. On approval, Prod deploys the **same artifact** that Dev and Test ran.
+The branching model is described in [branching.md](branching.md).
 
-To release an older build, open that run and re-run or approve its Prod stage. Don't queue a new run from an old commit.
+### To Development
+Merge a PR into `main`. The pipeline builds and deploys to **Development** automatically. With `batch: true`, pushes that arrive while a run is in progress are combined into the next run.
+
+### To Staging and Production
+1. A release manager cuts a release branch from `main`:
+   ```bash
+   git switch main && git pull
+   git switch -c release/2026.11
+   git push -u origin release/2026.11
+   ```
+2. The push starts a run that deploys to **Staging** automatically. QA and UAT sign off on Staging.
+3. **Production** waits for the approval on the `benefitnetflex-prod` environment. Approvers can see the build number (`yyyy.MM.dd.r`) and the commits it contains.
+4. On approval, Production deploys the **same artifact** that Staging ran. The pipeline then tags the commit `prod/<build number>` and adds the run tag `released-to-prod`.
+
+To find what is in Production: `git describe --tags --match "prod/*" --abbrev=0 origin/release/<current>`, or filter pipeline runs by the `released-to-prod` tag.
+
+### Hotfix
+1. Fix it in `main` via a `bugfix/*` PR. Development gets the fix first.
+2. Cherry-pick the merged commit into the current `release/*` branch via a PR, using the **Cherry-pick** button on the completed PR in Azure Repos.
+3. The merge builds the release branch. It deploys to Staging, then to Production after approval.
+
+Never push directly to `release/*`, and never merge `release/*` back into `main`.
 
 ## Rollback
 
 | What | How |
 |---|---|
 | **Web (Prod)** | Swap the slots back: in the Azure portal, go to App Service › Deployment slots › Swap, or run `az webapp deployment slot swap -g <rg> -n <prefix>-web --slot staging --target-slot production`. After a swap, the previous version is still in `staging`. |
-| **Workers** | Re-run the Prod stage of the last good run. The workers have no slot. |
+| **Workers** | Re-run the Prod stage of the last good release run: filter runs by the `released-to-prod` tag. The workers have no slot. |
 | **Database** | A dacpac can't be rolled back automatically. This is why schema changes must be backward compatible (expand/contract): the previous app version keeps working against the new schema, so rolling back the app is enough. |
 
 ## Adding a new deployable app
@@ -48,4 +66,6 @@ No change to the template is needed.
 | `Upload blob assets` returns 403 | The service connection identity is missing `Storage Blob Data Contributor`. Role assignments can take a few minutes to apply. |
 | Smoke test fails with HTTP 302 | `healthPath` redirects, for example to a login page. Point it at an anonymous endpoint that returns 200. |
 | Smoke test fails with a timeout | The app didn't start on the staging slot. Check the slot's log stream and slot-specific app settings. Production is unaffected, because nothing has been swapped. |
-| Deploy stages skipped | Expected for PR builds and for any branch other than `main`. |
+| Deploy stages skipped | Expected: PR builds deploy nowhere, `main` deploys only to Development, and `release/*` deploys only to Staging and Production. Other branches deploy nowhere. |
+| `Tag commit` fails with 403 / TF401027 | The build service identity is missing **Contribute** or **Create tag** on the repo ([setup.md § 5](setup.md#5-symbols-and-git-tags)). The deploy itself succeeded. Create the tag by hand or re-run the job. |
+| `Tag commit` fails with "tag already exists" | The Prod stage was re-run for the same build. The tag already marks this commit, so this is safe to ignore. |
