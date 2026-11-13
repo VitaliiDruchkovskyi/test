@@ -81,28 +81,17 @@ Branch security: allow **Create branch** under `release/` only for the release m
 
 On PR runs only the Build stage executes; the deploy stages are skipped.
 
-## 7. NuGet feed and authorization
+## 7. NuGet authorization
 
-Restores go through an Azure Artifacts feed, not straight to nuget.org. The feed has nuget.org as an **upstream source** and saves a copy of every package it serves, so a nuget.org outage or a deleted package doesn't break the build. The build signs in to the feed with `NuGetAuthenticate@1` in [`templates/nuget-restore.yml`](../../templates/nuget-restore.yml). No PATs or passwords are stored in the pipeline.
+The Build job runs `NuGetAuthenticate@1` ("Authenticate NuGet feeds") right before `NuGet restore`. It gives the restore credentials for authenticated feeds. No PATs or passwords are stored in the pipeline. The feeds themselves come from the solution's own `nuget.config`, if it has one, and otherwise from nuget.org.
 
-1. **Create the feed.** Go to **Artifacts › Create feed**, name it `benefitnetflex`, and set the scope to *Project*. Tick **Include packages from common public sources**, which adds nuget.org as an upstream.
-2. **Point `nuget.config` at it.** Replace `YOUR_ORG` and `YOUR_PROJECT` in [`/nuget.config`](../../nuget.config).
-3. **Give the build identity access.** Go to **Feed settings › Permissions** and add `<Project> Build Service (<Org>)` with the role **Feed and Upstream Reader (Collaborator)**. The plain *Feed Reader* role can't pull a package from nuget.org that isn't cached in the feed yet, and that shows up as a 401 or 404 on new packages.
-   - If the feed is in a different project, or is organization-scoped, either add `Project Collection Build Service (<Org>)` instead, or turn off **Limit job authorization scope to current project** for this project.
-4. **Optional: external feeds that need credentials**, such as a vendor's private NuGet feed:
-   1. Go to **Project settings › Service connections › New › NuGet** and use *ApiKey* or *Basic authentication*. Name it, for example, `sc-nuget-vendor`. Grant pipeline permission to this pipeline only.
-   2. Prefer adding the vendor feed as an **upstream of `benefitnetflex`** (*Feed settings › Upstream sources › Add › Other*). Its packages are then cached as well.
-   3. Or add the feed to `nuget.config` and set `nuGetServiceConnections: 'sc-nuget-vendor'` on the restore template in `azure-pipelines.yml`.
-5. **Developer machines.** Visual Studio signs in to Azure Artifacts automatically. For `nuget.exe` on the command line, install the [Azure Artifacts Credential Provider](https://github.com/microsoft/artifacts-credprovider).
+- **Azure Artifacts feeds in this organization** are covered automatically, through the build service identity. On the feed, go to **Feed settings › Permissions** and add `<Project> Build Service (<Org>)` with the role **Feed and Upstream Reader (Collaborator)**. *Feed Reader* is not enough to pull a package from an upstream source for the first time.
+  - If the feed is in a different project or is organization-scoped, either add `Project Collection Build Service (<Org>)`, or turn off **Limit job authorization scope to current project**.
+- **External feeds that need credentials**, such as a vendor's private feed:
+  1. Go to **Project settings › Service connections › New › NuGet**, using *ApiKey* or *Basic authentication*. Name it, for example, `sc-nuget-vendor`, and grant pipeline permission to this pipeline only.
+  2. Set the pipeline parameter `nuGetServiceConnections` to that name, either as the default in `azure-pipelines.yml` or at queue time. Separate several connections with commas.
 
-Restore steps, in order:
-
-1. Install NuGet 6.x.
-2. **Authenticate**: get credentials for the feeds.
-3. Restore the package cache.
-4. `nuget restore` with `-NonInteractive`, retried up to 3 times on failure.
-
-When the cache hits, the restore step is skipped.
+**Recommended, for the "package not available" problem:** create an Azure Artifacts feed with nuget.org as an **upstream source** (*Artifacts › Create feed › Include packages from common public sources*), and point the solution's `nuget.config` at it. The feed saves a copy of every package it serves, so a nuget.org outage or a deleted package no longer breaks the build. The authentication step above already covers that feed.
 
 ## 8. First-run checklist
 
@@ -112,7 +101,7 @@ Check these against the real solution before you queue the first run:
 - [ ] The test assemblies match `*Tests.dll`. If they don't, update `testAssemblyVer2`.
 - [ ] `dacpacName` matches the dacpac file the database project produces.
 - [ ] `App_Data/ninjectModules.Release.xml` (and any other profiles) has **Build Action = Content** in each app project, so it is published.
-- [ ] The `benefitnetflex` feed exists, `nuget.config` has the real org and project, and the build service has the *Feed and Upstream Reader (Collaborator)* role (§ 7).
+- [ ] If restore uses Azure Artifacts or other authenticated feeds, the build service and service connections have access (§ 7).
 - [ ] All projects use `packages.config`. If any use `PackageReference`, remove the restore `condition` (see the comment in the YAML).
 - [ ] The projects' .NET Framework targeting pack is installed on the `windows-2025` image. Check the image's software list. If it isn't, pin `vmImage` to `windows-2022`.
 - [ ] Prod `healthPath` returns **200 without a redirect** for an anonymous request on the staging slot.

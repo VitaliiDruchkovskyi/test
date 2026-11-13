@@ -16,8 +16,6 @@ This folder documents the build-to-release pipeline for BenefitNetFlex (.NET Fra
 | File | Purpose |
 |---|---|
 | [`/azure-pipelines.yml`](../../azure-pipelines.yml) | Pipeline entry point: trigger, the app list, the Build stage, and the Dev, Staging and Prod stages |
-| [`/templates/nuget-restore.yml`](../../templates/nuget-restore.yml) | Authenticated NuGet restore (feed sign-in, cache, retries), used by the Build stage |
-| [`/nuget.config`](../../nuget.config) | Package sources: the Azure Artifacts feed, which proxies and caches nuget.org |
 | [`/templates/deploy-environment.yml`](../../templates/deploy-environment.yml) | Deploys one environment. All three deploy stages use it, so environments can't drift apart |
 
 ## Flow
@@ -43,7 +41,7 @@ It runs on every push to `main` or `release/*` and, through the branch policies,
 The **App** and **Database** jobs run in parallel.
 
 1. **App job**
-   - Restores NuGet packages through the Azure Artifacts feed: authenticates (`NuGetAuthenticate`), restores the cache, then runs `nuget restore` with retries. The restore is skipped when the cache hits.
+   - Restores NuGet packages: restores the cache, authenticates to the feeds (`NuGetAuthenticate`), then runs `NuGet restore`. The restore is skipped when the cache hits.
    - Compiles the solution once and writes an MSBuild binlog.
    - Runs the unit tests (`*Tests.dll`) with code coverage. The run fails if no tests are found.
    - On `main` only, source-indexes the PDBs and publishes them to the Azure Artifacts symbol server.

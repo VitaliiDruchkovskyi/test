@@ -40,6 +40,12 @@ parameters:
     project: src/BenefitNetFlex/BenefitNetFlex.MaintenanceWorker/BenefitNetFlex.MaintenanceWorker.csproj
     slotSwap: false
 
+# Comma-separated NuGet service connections for external feeds that need credentials
+# (e.g. 'sc-nuget-vendor'). Leave empty if all feeds are Azure Artifacts feeds in this org.
+- name: nuGetServiceConnections
+  type: string
+  default: ''
+
 variables:
   solution: src/BenefitNetFlex/BenefitNetFlex.sln
   dbSolution: src/BenefitNetFlex.DataBase/BenefitNetFlex.DataBase.sln
@@ -61,14 +67,33 @@ stages:
     - checkout: self
       fetchDepth: 1
 
-    # Authenticated restore from the Azure Artifacts feed in /nuget.config (nuget.org as upstream).
-    - template: templates/nuget-restore.yml
-      parameters:
-        solution: $(solution)
-        nugetConfigPath: nuget.config
-        packagesDirectory: $(Build.SourcesDirectory)/src/BenefitNetFlex/packages
-        cacheKeyFiles: src/BenefitNetFlex/**/packages.config
-        nuGetServiceConnections: ''    # e.g. 'sc-nuget-vendor' for an external feed needing credentials
+    - task: NuGetToolInstaller@1
+      inputs:
+        versionSpec: 6.x
+
+    # Valid only while every project uses packages.config. If any project moves to
+    # PackageReference, remove the restore condition (obj/project.assets.json is not cached).
+    - task: Cache@2
+      displayName: Cache NuGet packages
+      inputs:
+        key: 'nuget | "$(Agent.OS)" | src/BenefitNetFlex/**/packages.config'
+        path: $(Build.SourcesDirectory)/src/BenefitNetFlex/packages
+        cacheHitVar: NUGET_CACHE_RESTORED
+
+    # Credentials for authenticated feeds: Azure Artifacts feeds in this organization
+    # (build service identity) and external feeds via NuGet service connections.
+    - task: NuGetAuthenticate@1
+      displayName: Authenticate NuGet feeds
+      ${{ if ne(parameters.nuGetServiceConnections, '') }}:
+        inputs:
+          nuGetServiceConnections: ${{ parameters.nuGetServiceConnections }}
+
+    - task: NuGetCommand@2
+      displayName: NuGet restore
+      condition: ne(variables.NUGET_CACHE_RESTORED, 'true')
+      inputs:
+        command: restore
+        restoreSolution: $(solution)
 
     # Plain compile of the whole solution. No packaging, no config swapping here.
     - task: VSBuild@1
