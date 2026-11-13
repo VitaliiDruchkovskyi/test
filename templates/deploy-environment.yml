@@ -1,0 +1,121 @@
+# Deploys one environment from the artifacts produced by the Build stage.
+# Used by the Dev, Test and Prod stages in azure-pipelines.yml - keep environments identical
+# by changing this file, not by copy-pasting steps into a stage.
+#
+# Expects these variables (from the stage's variable group, ideally Key Vault-linked):
+#   appServicePrefix, resourceGroupName, sqlServerName, sqlDatabaseName,
+#   storageAccountName, blobContainer
+# See docs/pipeline/setup.md for the Azure roles the service connection needs.
+parameters:
+- name: environment
+  type: string
+- name: serviceConnection          # ARM service connection, workload identity federation
+  type: string
+- name: webApps
+  type: object
+- name: vmImage
+  type: string
+- name: dacpacName                 # dacpac file name without extension
+  type: string
+- name: ninjectProfile             # picks App_Data/ninjectModules.<profile>.xml
+  type: string
+  default: Release
+- name: useStagingSlot
+  type: boolean
+  default: false
+- name: healthPath
+  type: string
+  default: /
+
+jobs:
+- deployment: Deploy
+  displayName: Deploy to ${{ parameters.environment }}
+  environment: ${{ parameters.environment }}
+  pool:
+    vmImage: ${{ parameters.vmImage }}   # Windows required: SqlAzureDacpacDeployment is Windows-only
+  strategy:
+    runOnce:
+      deploy:
+        # Deployment jobs download all pipeline artifacts to $(Pipeline.Workspace)/<artifact>.
+        steps:
+        # 1. Schema first. Changes must be backward compatible (expand/contract),
+        #    because the old app version keeps running until the swap.
+        - task: SqlAzureDacpacDeployment@1
+          displayName: Database schema (dacpac)
+          inputs:
+            azureSubscription: ${{ parameters.serviceConnection }}
+            AuthenticationType: servicePrincipal
+            ServerName: $(sqlServerName).database.windows.net
+            DatabaseName: $(sqlDatabaseName)
+            deployType: DacpacTask
+            DeploymentAction: Publish
+            DacpacFile: $(Pipeline.Workspace)/database/${{ parameters.dacpacName }}.dacpac
+            AdditionalArguments: /p:BlockOnPossibleDataLoss=true
+
+        # 2. Static blob assets, Entra ID auth instead of storage keys.
+        - task: AzureCLI@2
+          displayName: Upload blob assets
+          inputs:
+            azureSubscription: ${{ parameters.serviceConnection }}
+            scriptType: pscore
+            scriptLocation: inlineScript
+            inlineScript: >-
+              az storage blob upload-batch
+              --account-name $(storageAccountName)
+              --destination $(blobContainer)
+              --source "$(Pipeline.Workspace)/blob"
+              --auth-mode login --overwrite --only-show-errors
+
+        # 3. Apps: select environment config, deploy (to staging slot in prod).
+        - ${{ each app in parameters.webApps }}:
+          - pwsh: |
+              $dir = "$(Pipeline.Workspace)/web/${{ app.name }}/App_Data"
+              Copy-Item "$dir/ninjectModules.${{ parameters.ninjectProfile }}.xml" "$dir/ninjectModules.xml" -Force -ErrorAction Stop
+            displayName: ${{ app.name }} - select ninject profile '${{ parameters.ninjectProfile }}'
+
+          - task: AzureWebApp@1
+            displayName: Deploy ${{ app.name }}
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              appType: webApp
+              appName: $(appServicePrefix)-${{ lower(app.name) }}
+              ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+                deployToSlotOrASE: true
+                resourceGroupName: $(resourceGroupName)
+                slotName: staging
+              package: $(Pipeline.Workspace)/web/${{ app.name }}
+              deploymentMethod: zipDeploy   # not runFromPackage: legacy apps may write to App_Data
+
+          - ${{ if and(parameters.useStagingSlot, eq(app.slotSwap, true)) }}:
+            # Ask Azure for the slot's real host name: apps created with "unique default
+            # hostname" don't follow the <app>-<slot>.azurewebsites.net pattern.
+            # Redirects are not followed, so a redirect to a login page counts as a failure.
+            - task: AzureCLI@2
+              displayName: ${{ app.name }} - smoke test staging slot
+              inputs:
+                azureSubscription: ${{ parameters.serviceConnection }}
+                scriptType: pscore
+                scriptLocation: inlineScript
+                inlineScript: |
+                  $hostName = az webapp show --resource-group "$(resourceGroupName)" --name "$(appServicePrefix)-${{ lower(app.name) }}" --slot staging --query defaultHostName -o tsv
+                  if ($LASTEXITCODE -ne 0 -or -not $hostName) { Write-Error "Could not resolve staging slot host name"; exit 1 }
+                  $url = "https://$hostName${{ parameters.healthPath }}"
+                  foreach ($i in 1..10) {
+                    try {
+                      $r = Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 30 -MaximumRedirection 0 -SkipHttpErrorCheck
+                      Write-Host "Attempt ${i}: HTTP $($r.StatusCode)"
+                      if ($r.StatusCode -eq 200) { exit 0 }
+                    } catch { Write-Host "Attempt ${i}: $($_.Exception.Message)" }
+                    Start-Sleep -Seconds 15
+                  }
+                  Write-Error "Smoke test failed: $url"
+                  exit 1
+
+            - task: AzureAppServiceManage@0
+              displayName: ${{ app.name }} - swap staging -> production
+              inputs:
+                azureSubscription: ${{ parameters.serviceConnection }}
+                Action: Swap Slots
+                WebAppName: $(appServicePrefix)-${{ lower(app.name) }}
+                ResourceGroupName: $(resourceGroupName)
+                SourceSlot: staging

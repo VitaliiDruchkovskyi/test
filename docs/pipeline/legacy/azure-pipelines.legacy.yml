@@ -1,0 +1,84 @@
+# LEGACY - kept for reference only. Do NOT point a pipeline at this file.
+# This is the original build-only pipeline that the root azure-pipelines.yml replaces.
+# The problems with it are listed in docs/pipeline/review.md.
+
+# ASP.NET
+# Build and test ASP.NET projects.
+# Add steps that publish symbols, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/apps/aspnet/build-aspnet-4
+
+trigger:
+- main
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  solution: '**/src/BenefitNetFlex/BenefitNetFlex.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+
+steps:
+- task: NuGetToolInstaller@1
+
+- task: NuGetCommand@2
+  inputs:
+    restoreSolution: '$(solution)'
+
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      copy src\BenefitNetFlex\BenefitNetFlex.BulkOperationWorker\App_Data\ninjectModules.Release.xml src\BenefitNetFlex\BenefitNetFlex.BulkOperationWorker\App_Data\ninjectModules.xml
+      copy src\BenefitNetFlex\BenefitNetFlex.MaintenanceWorker\App_Data\ninjectModules.Release.xml src\BenefitNetFlex\BenefitNetFlex.MaintenanceWorker\App_Data\ninjectModules.xml
+      copy src\BenefitNetFlex\BenefitNetFlex.Web\App_Data\ninjectModules.Release.xml src\BenefitNetFlex\BenefitNetFlex.Web\App_Data\ninjectModules.xml
+  displayName: 'update ninjectModules.xml'
+
+- task: VSBuild@1
+  inputs:
+    solution: '$(solution)'
+    msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactstagingdirectory)\\" /p:PrecompileBeforePublish=true /p:EnableUpdateable=true /p:WDPMergeOption=MergeAllPagesAndControlToASingleAssembly /p:UseMerge=true /p:ContentAssemblyName="PagesAndControls"'
+    platform: '$(buildPlatform)'
+    configuration: '$(buildConfiguration)'
+  displayName: 'Build Web Solution'
+
+- task: VSTest@2
+  inputs:
+    platform: '$(buildPlatform)'
+    configuration: '$(buildConfiguration)'
+  displayName: 'Run Tests'
+
+- task: MSBuild@1
+  inputs:
+    solution: '**\src\BenefitNetFlex.DataBase\BenefitNetFlex.DataBase.sln'
+    platform: '$(BuildPlatform)'
+    configuration: '$(BuildConfiguration)'
+  displayName: 'Build Database Solution'
+
+
+- task: CopyFiles@2
+  inputs:
+    SourceFolder: '$(agent.builddirectory)\s\src\BenefitNetFlex.DataBase'
+    Contents: '**'
+    TargetFolder: '$(build.artifactstagingdirectory)\Database'
+  displayName: 'Copy Database scripts'
+
+- task: CopyFiles@2
+  inputs:
+    SourceFolder: 'blob'
+    Contents: '**'
+    TargetFolder: '$(build.artifactstagingdirectory)\blob\'
+  displayName: 'Copy Blob files'
+
+- task: PublishSymbols@2
+  displayName: 'Publish symbols path'
+  inputs:
+    SearchPattern: '**\bin\**\*.pdb'
+    PublishSymbols: false
+  continueOnError: true
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'drop'
+    publishLocation: 'Container'

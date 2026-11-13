@@ -1,0 +1,236 @@
+# BenefitNetFlex - build once, deploy many (Dev -> Test -> Prod)
+#
+# Docs: docs/pipeline/README.md (how it works), docs/pipeline/setup.md (one-time
+# Azure DevOps / Azure setup), docs/pipeline/runbook.md (day-to-day operations).
+#
+# PR validation: Azure Repos ignores the YAML `pr:` keyword. Add a "Build validation"
+# branch policy on main that points at this pipeline. On PR runs only the Build stage runs.
+#
+# Approvals / business-hours / exclusive-lock checks live on the Environments
+# (Pipelines > Environments > benefitnetflex-<env> > Approvals and checks), not in YAML.
+
+name: $(Date:yyyy.MM.dd)$(Rev:.r)
+
+trigger:
+  batch: true                       # don't queue one run per push during busy merges
+  branches:
+    include: [ main ]
+  paths:
+    exclude: [ '**/*.md', docs/** ]
+
+parameters:
+# One entry per deployable ASP.NET app. App Service name = <appServicePrefix>-<lower(name)>
+# slotSwap: false for background workers, so two copies never process jobs at the same time.
+- name: webApps
+  type: object
+  default:
+  - name: Web
+    project: src/BenefitNetFlex/BenefitNetFlex.Web/BenefitNetFlex.Web.csproj
+    slotSwap: true
+  - name: BulkOperationWorker
+    project: src/BenefitNetFlex/BenefitNetFlex.BulkOperationWorker/BenefitNetFlex.BulkOperationWorker.csproj
+    slotSwap: false
+  - name: MaintenanceWorker
+    project: src/BenefitNetFlex/BenefitNetFlex.MaintenanceWorker/BenefitNetFlex.MaintenanceWorker.csproj
+    slotSwap: false
+
+variables:
+  solution: src/BenefitNetFlex/BenefitNetFlex.sln
+  dbSolution: src/BenefitNetFlex.DataBase/BenefitNetFlex.DataBase.sln
+  dacpacName: BenefitNetFlex.DataBase      # file name (without .dacpac) of the database to deploy
+  buildConfiguration: Release
+  vmImage: windows-2025             # pinned on purpose; bump deliberately, not via windows-latest
+  isDeployable: $[and(eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))]
+
+stages:
+# ---------------------------------------------------------------- BUILD
+- stage: Build
+  jobs:
+  - job: App
+    displayName: Build, test & publish web apps
+    pool:
+      vmImage: ${{ variables.vmImage }}
+    steps:
+    - checkout: self
+      fetchDepth: 1
+
+    - task: NuGetToolInstaller@1
+      inputs:
+        versionSpec: 6.x
+
+    # Valid only while every project uses packages.config. If any project moves to
+    # PackageReference, remove the restore condition (obj/project.assets.json is not cached).
+    - task: Cache@2
+      displayName: Cache NuGet packages
+      inputs:
+        key: 'nuget | "$(Agent.OS)" | src/BenefitNetFlex/**/packages.config'
+        path: $(Build.SourcesDirectory)/src/BenefitNetFlex/packages
+        cacheHitVar: NUGET_CACHE_RESTORED
+
+    - task: NuGetCommand@2
+      displayName: NuGet restore
+      condition: ne(variables.NUGET_CACHE_RESTORED, 'true')
+      inputs:
+        command: restore
+        restoreSolution: $(solution)
+
+    # Plain compile of the whole solution. No packaging, no config swapping here.
+    - task: VSBuild@1
+      displayName: Build solution
+      inputs:
+        solution: $(solution)
+        platform: Any CPU
+        configuration: $(buildConfiguration)
+        maximumCpuCount: true
+        msbuildArgs: /bl:$(Build.ArtifactStagingDirectory)/logs/build.binlog
+
+    # Tests run before anything is packaged; a red test stops the run.
+    - task: VSTest@2
+      displayName: Unit tests
+      inputs:
+        testSelector: testAssemblies
+        testAssemblyVer2: |
+          **\bin\$(buildConfiguration)\**\*Tests.dll
+          !**\obj\**
+          !**\packages\**
+        searchFolder: $(Build.SourcesDirectory)/src
+        configuration: $(buildConfiguration)
+        codeCoverageEnabled: true
+        failOnMinTestsNotRun: true
+        minimumExpectedTests: 1
+
+    # Real symbol publishing (Azure Artifacts symbol server), only for deployable builds.
+    # Runs before the publish steps so the source-indexed PDBs end up in the app folders.
+    - task: PublishSymbols@2
+      displayName: Index & publish symbols
+      condition: and(succeeded(), eq(variables.isDeployable, 'true'))
+      inputs:
+        SymbolsFolder: $(Build.SourcesDirectory)/src
+        SearchPattern: '**/bin/**/BenefitNetFlex*.pdb'
+        IndexSources: true
+        PublishSymbols: true
+        SymbolServerType: TeamServices
+
+    # Publish each app to its own folder. Project-level builds use "AnyCPU" (no space).
+    # All ninjectModules.*.xml variants ship; the right one is chosen at deploy time.
+    - ${{ each app in parameters.webApps }}:
+      - task: VSBuild@1
+        displayName: Publish ${{ app.name }}
+        inputs:
+          solution: ${{ app.project }}
+          platform: AnyCPU
+          configuration: $(buildConfiguration)
+          msbuildArgs: >-
+            /p:DeployOnBuild=true
+            /p:WebPublishMethod=FileSystem
+            /p:publishUrl="$(Build.ArtifactStagingDirectory)\web\${{ app.name }}"
+            /p:DeleteExistingFiles=true
+            /p:BuildProjectReferences=false
+            /p:PrecompileBeforePublish=true
+            /p:EnableUpdateable=true
+            /p:WDPMergeOption=MergeAllPagesAndControlToASingleAssembly
+            /p:UseMerge=true
+            /p:ContentAssemblyName=PagesAndControls
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish artifact 'web'
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/web
+        artifact: web
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish build logs (on failure)
+      condition: failed()
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/logs
+        artifact: logs-$(System.JobAttempt)
+
+  - job: Database
+    displayName: Build database & static assets
+    pool:
+      vmImage: ${{ variables.vmImage }}
+    steps:
+    - checkout: self
+      fetchDepth: 1
+
+    - task: VSBuild@1
+      displayName: Build database project (dacpac)
+      inputs:
+        solution: $(dbSolution)
+        platform: Any CPU
+        configuration: $(buildConfiguration)
+
+    # Ship the compiled dacpacs (the main one plus any it references) and publish
+    # profiles, not the whole source folder. The deploy step targets $(dacpacName) only.
+    - task: CopyFiles@2
+      displayName: Collect dacpac & publish profiles
+      inputs:
+        SourceFolder: $(Build.SourcesDirectory)/src/BenefitNetFlex.DataBase
+        Contents: |
+          **/bin/$(buildConfiguration)/*.dacpac
+          **/*.publish.xml
+        TargetFolder: $(Build.ArtifactStagingDirectory)/database
+        flattenFolders: true
+
+    - pwsh: |
+        $file = "$(Build.ArtifactStagingDirectory)/database/$(dacpacName).dacpac"
+        if (-not (Test-Path $file)) { Write-Error "Expected dacpac not found: $file. Check the dacpacName variable."; exit 1 }
+      displayName: Verify ${{ variables.dacpacName }}.dacpac exists
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish artifact 'database'
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/database
+        artifact: database
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish artifact 'blob'
+      inputs:
+        targetPath: $(Build.SourcesDirectory)/blob
+        artifact: blob
+
+# ---------------------------------------------------------------- DEPLOY
+- stage: Dev
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+  variables:
+  - group: benefitnetflex-dev        # appServicePrefix, resourceGroupName, sqlServerName, sqlDatabaseName, storageAccountName, blobContainer
+  jobs:
+  - template: templates/deploy-environment.yml
+    parameters:
+      environment: benefitnetflex-dev
+      serviceConnection: sc-benefitnetflex-dev
+      webApps: ${{ parameters.webApps }}
+      vmImage: ${{ variables.vmImage }}
+      dacpacName: ${{ variables.dacpacName }}
+      ninjectProfile: Release        # change to e.g. Dev once App_Data/ninjectModules.Dev.xml exists
+
+- stage: Test
+  dependsOn: Dev
+  variables:
+  - group: benefitnetflex-test
+  jobs:
+  - template: templates/deploy-environment.yml
+    parameters:
+      environment: benefitnetflex-test
+      serviceConnection: sc-benefitnetflex-test
+      webApps: ${{ parameters.webApps }}
+      vmImage: ${{ variables.vmImage }}
+      dacpacName: ${{ variables.dacpacName }}
+      ninjectProfile: Release
+
+- stage: Prod
+  dependsOn: Test
+  variables:
+  - group: benefitnetflex-prod
+  jobs:
+  - template: templates/deploy-environment.yml
+    parameters:
+      environment: benefitnetflex-prod
+      serviceConnection: sc-benefitnetflex-prod
+      webApps: ${{ parameters.webApps }}
+      vmImage: ${{ variables.vmImage }}
+      dacpacName: ${{ variables.dacpacName }}
+      ninjectProfile: Release
+      useStagingSlot: true
+      healthPath: /                  # must return 200 anonymously, without a redirect (see runbook)
