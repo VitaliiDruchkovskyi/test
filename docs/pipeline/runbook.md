@@ -27,11 +27,27 @@ To find what is in Production: `git describe --tags --match "prod/*" --abbrev=0 
 
 Never push directly to `release/*`, and never merge `release/*` back into `main`.
 
+### What happens during a production canary
+After the Web app is on the `staging` slot and its smoke test passes:
+
+| Step | Users on the new version | Duration | Moves on when |
+|---|---|---|---|
+| `canary 10%` | about 10% | 10 min | The health probe hasn't failed 3 times in a row, **and** the Application Insights failed-request rate is ≤ 2% (if there were at least 50 canary requests) |
+| `canary 50%` | about 50% | 10 min | Same checks |
+| `reset traffic routing`, then `swap` | 100% | about 1–2 min | Done |
+
+Each user is pinned to one version by the `x-ms-routing-name` cookie. If a check fails, routing is cleared automatically, so everyone is on the previous version and nothing is swapped. The run then fails with the reason. To abort by hand, **cancel the run**. The safety-net step clears the routing.
+
+To watch a canary live, run this in Application Insights: `requests | where timestamp > ago(15m) | summarize count(), failed = countif(success == false) by cloud_RoleName, bin(timestamp, 1m)`.
+
+To change the steps, duration or thresholds, edit the `canary` block on the Prod stage in `azure-pipelines.yml`, for example `steps: [ 5, 25, 50 ]`.
+
 ## Rollback
 
 | What | How |
 |---|---|
-| **Web (Prod)** | Swap the slots back: in the Azure portal, go to App Service › Deployment slots › Swap, or run `az webapp deployment slot swap -g <rg> -n <prefix>-web --slot staging --target-slot production`. After a swap, the previous version is still in `staging`. |
+| **Web (Prod), during the canary** | Automatic. Routing is cleared and nobody stays on the new version. By hand: `az webapp traffic-routing clear -g <rg> -n <prefix>-web`, or cancel the run. |
+| **Web (Prod), after the swap** | Swap the slots back: in the Azure portal, go to App Service › Deployment slots › Swap, or run `az webapp deployment slot swap -g <rg> -n <prefix>-web --slot staging --target-slot production`. After a swap, the previous version is still in `staging`. |
 | **Workers** | Re-run the Prod stage of the last good release run: filter runs by the `released-to-prod` tag. The workers have no slot. |
 | **Database** | A dacpac can't be rolled back automatically. This is why schema changes must be backward compatible (expand/contract): the previous app version keeps working against the new schema, so rolling back the app is enough. |
 
@@ -91,6 +107,11 @@ No change to the template is needed.
 | `Run OWASP Dependency-Check` fails with CVSS ≥ N | The gate is on (`dependencyCheckFailOnCvss` below 11) and a package has a known vulnerability. Upgrade the package, or suppress a confirmed false positive with a reason. |
 | `Run ZAP baseline scan` exits with code 3 | ZAP couldn't run or couldn't reach the site. Check that Staging is reachable from hosted agents ([setup.md § 7a](setup.md#7a-security-scans-prerequisites)) and that the Docker image tag exists. |
 | Staging stage shows *partially succeeded* | ZAP reported warnings in report-only mode. Read the `zap-report` artifact. Production can still be approved. |
+| `canary N%` fails: "health probe failed 3 times" | The new version stopped answering 200 on `healthPath` under real traffic. Check the `staging` slot's logs. Users are already back on the previous version. |
+| `canary N%` fails: "failed-request rate … above 2%" | The new version returns errors for real users. Check failures in Application Insights, filtered to the slot. Users are already back on the previous version. |
+| `canary N%` warns: "Only 0 canary requests" | `canary.requestFilter` doesn't match the slot's `cloud_RoleName`, or there was very little traffic. Fix the filter ([setup.md § 7b](setup.md#7b-canary-releases-production-web-app)). Until then, the canary is judged by the health probe only. |
+| `canary N%` fails: "could not query Application Insights" | The prod service connection is missing **Monitoring Reader** on Application Insights, or `appInsightsName` / `appInsightsResourceGroup` is wrong. |
+| Users signed out or losing form data during a release | The `machineKey` differs between slots, or the app uses InProc session state ([setup.md § 7b](setup.md#7b-canary-releases-production-web-app)). |
 | Deploy stages skipped | Expected: PR builds deploy nowhere, `main` deploys only to Development, and `release/*` deploys only to Staging and Production. Other branches deploy nowhere. |
 | `Tag commit` fails with 403 / TF401027 | The build service identity is missing **Contribute** or **Create tag** on the repo ([setup.md § 5](setup.md#5-symbols-and-git-tags)). The deploy itself succeeded. Create the tag by hand or re-run the job. |
 | `Tag commit` fails with "tag already exists" | The Prod stage was re-run for the same build. The tag already marks this commit, so this is safe to ignore. |

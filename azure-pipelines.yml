@@ -426,6 +426,15 @@ stages:
       ninjectProfile: Release
       useStagingSlot: true
       healthPath: /                  # must return 200 anonymously, without a redirect (see runbook)
+      # Canary (production only): 10% -> 50% of users on the new version, 10 min each,
+      # automatic rollback on health or error-rate failure, then swap. enabled: false = plain swap.
+      canary:
+        enabled: true
+        steps: [ 10, 50 ]
+        stepMinutes: 10
+        maxFailedRequestPercent: 2
+        minRequests: 50
+        requestFilter: "cloud_RoleName has 'staging'"
 
   # Mark exactly what is in production: annotated tag prod/<build number> on the built commit.
   # Needs "Contribute" and "Create tag" for the build service identity on the repo (setup.md).

@@ -105,6 +105,24 @@ The Build job runs `NuGetAuthenticate@1` ("Authenticate NuGet feeds") right befo
 - **ZAP baseline scan**: runs on a Microsoft-hosted **Ubuntu** agent and scans the Staging Web app over HTTPS. Staging must be **reachable from Microsoft-hosted agents**. If it is behind a private endpoint, IP restrictions or a VPN, use a self-hosted agent inside the network, or allow the Azure DevOps IP ranges. It scans unauthenticated pages only. Scanning signed-in pages needs a ZAP authentication context, which is a later step.
 - **Smoke tests**: for every app with `smokeTest: true`, `healthPath` must return 200 anonymously, without a redirect, in **every** environment, not only on the Prod slot.
 
+## 7b. Canary releases (production Web app)
+
+The Prod stage ramps users onto the new version (10% → 50% → swap) using App Service **traffic routing**. During the canary, the old and new versions serve real users **at the same time**, so the following must be true first:
+
+| Requirement | Why | How |
+|---|---|---|
+| **Same `machineKey` on both slots** | Slots are separate sites. With auto-generated keys, users who move between versions lose their forms-auth cookie, anti-forgery tokens and ViewState | Set an explicit `<machineKey>` (validation and decryption keys) shared by both slots, for example from Key Vault through config transforms or app settings |
+| **Session state outside the process** | InProc sessions are lost when a user moves to the other version (at a ramp step or at the swap) | Use an out-of-process session store, such as Redis or SQL, or confirm the app doesn't depend on session data |
+| **Production settings on the `staging` slot** | During the canary the slot serves real production users | Its connection strings and keys must point to production resources. Only truly slot-specific values should be deployment slot settings |
+| **Backward-compatible schema** | Both versions use the same database at once | Expand/contract migrations (already required) |
+| **Application Insights on the Web app** | Gives the failed-request rate the canary is judged on | Add `appInsightsName` and `appInsightsResourceGroup` to the `benefitnetflex-prod` variable group. Give the prod service connection **Monitoring Reader** on the Application Insights resource |
+| **Correct canary filter** | The check must count only the slot's requests | Run `requests \| summarize count() by cloud_RoleName` in Application Insights during a canary. If the slot doesn't show up as a name containing `staging`, change `canary.requestFilter` in `azure-pipelines.yml` |
+| **Warm-up on swap** | Avoids a cold start for the remaining users at the swap | Add `<applicationInitialization>` to `web.config`, or set the app setting `WEBSITE_SWAP_WARMUP_PING_PATH` (for example `/health`) and `WEBSITE_SWAP_WARMUP_PING_STATUSES=200` |
+
+Traffic routing needs the Standard tier or higher, which slots already require. The extra Azure roles: the prod service connection already has `Website Contributor` (enough for traffic routing) and now also needs `Monitoring Reader` on Application Insights.
+
+To turn the canary off, set `canary.enabled: false` on the Prod stage. Production then does a plain smoke test and swap.
+
 ## 8. First-run checklist
 
 Check these against the real solution before you queue the first run:
@@ -117,6 +135,7 @@ Check these against the real solution before you queue the first run:
 - [ ] All projects use `packages.config`. If any use `PackageReference`, remove the restore `condition` (see the comment in the YAML).
 - [ ] The projects' .NET Framework targeting pack is installed on the `windows-2025` image. Check the image's software list. If it isn't, pin `vmImage` to `windows-2022`.
 - [ ] `healthPath` returns **200 without a redirect** for an anonymous request, in every environment, for apps with `smokeTest: true`.
+- [ ] For the production canary: shared `machineKey`, out-of-process session state, production settings on the `staging` slot, `appInsightsName` and `appInsightsResourceGroup` in `benefitnetflex-prod`, and `Monitoring Reader` for the prod service connection (§ 7b).
 - [ ] The `benefitnetflex-build` variable group exists with the `nvdApiKey` secret, and Staging is reachable from hosted agents for ZAP (§ 7a).
 - [ ] If the old release process ran hand-written SQL scripts from the database folder, add them to the `database` artifact and a step for them. Only the dacpac is shipped now.
 - [ ] Treat the first run as a dry run. Merge to `main` and verify Development. Then cut a first `release/*` branch and verify Staging before approving Production.

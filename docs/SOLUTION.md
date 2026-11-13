@@ -38,7 +38,8 @@ Deeper detail is in [docs/pipeline/](pipeline/README.md). That folder covers how
                        ┌─► development  + smoke test                         (from main)
 PR / push ─► Build ────┤
   (+ OWASP             └─► staging + smoke + ZAP ─► production ─► git tag   (from release/*)
-   Dependency-Check)                               (approval)
+   Dependency-Check)                               (approval, canary
+                                                    10% → 50% → swap)
 ```
 
 - **Build stage**: it has three parallel jobs.
@@ -47,7 +48,7 @@ PR / push ─► Build ────┤
   - **Database**: build the dacpac and collect the blob assets.
   - The outputs are three artifacts that fit any environment: `web`, `database` and `blob`.
 - **Deploy stages**: each stage runs the same template, in this order: database schema, then blob assets, then the apps, then a smoke test.
-  - In production only, the Web app goes through a staging slot, a smoke test and a swap.
+  - In production only, the Web app goes through a staging slot, a smoke test, a **canary** (10% → 50% of users) and then a swap.
   - Staging also runs an OWASP ZAP baseline scan before Production can be approved.
 
 ---
@@ -241,12 +242,30 @@ Each entry shows: **Before**, the original pipeline. **After**, the new pipeline
   - Workers default to `false`, because they may not serve an anonymous page. Turn it on per app once they do.
   - The check is the same everywhere: the real host name comes from Azure, no redirects are followed, and it retries.
 
+#### C28. Canary release in production: 10% → 50% → swap, with automatic rollback (P10)
+- **Before:** in production, the Web app went to the staging slot, passed a smoke test, then all users moved to the new version at once in the swap.
+- **After:** between the smoke test and the swap, App Service **traffic routing** sends 10% and then 50% of users to the slot, for 10 minutes each. During each step:
+  - The slot's health endpoint is checked every 30 seconds. Three failures in a row trigger a rollback.
+  - At the end of the step, the Application Insights failed-request rate of the canary is checked. Above 2% (with at least 50 requests) triggers a rollback.
+  - A rollback clears the routing, so all users are back on the current version, nothing is swapped, and the run fails with the reason.
+  - After the last step, routing is reset and the slot is swapped in. A safety-net step clears the routing if the run fails or is cancelled.
+  - It is production only, and Web only: the workers get no user traffic. Everything is configurable in the `canary` block, and `enabled: false` returns to a plain swap.
+- **Why:**
+  - A bad release reaches 10% of users for a few minutes instead of everyone, and the rollback is automatic, with no one needing to watch.
+  - Real production traffic and data find problems no smoke test or staging run can.
+  - Promotion is automatic, not a manual click per step. Releases don't need someone standing by. The decision rests on measured signals (health and error rate) rather than a judgement call. It fits in the existing deploy job, so the release stays one job.
+  - App Service's built-in traffic routing pins each user to one version (cookie), so users don't flip between versions. The built-in `canary` strategy of Azure DevOps deployment jobs only supports Kubernetes and VMs, so Azure CLI steps are used.
+  - Routing is cleared *before* the swap, because after a swap the slot holds the old version.
+- **Prerequisites** ([setup.md § 7b](pipeline/setup.md#7b-canary-releases-production-web-app)): both versions serve users at the same time, so the slots need the same `machineKey` (forms auth, anti-forgery and ViewState in .NET Framework), out-of-process session state, production settings on the slot, backward-compatible schema changes, and Application Insights.
+- **On "downtime" with slots:** a swap warms the slot up before switching and doesn't drop connections. A visible blip usually comes from slot-specific settings restarting the app, or from a missing warm-up path. Both are covered in setup.md § 7b.
+
 ---
 
 ## 4. Trade-offs and known limits
 
 - **Expand/contract is a team discipline.** The pipeline can block data loss, but it can't make a schema change backward compatible.
 - **The Ninject file copy is a bridge.** Moving profile selection into an app setting is the cleaner end state.
+- **The canary needs traffic and correct telemetry.** With little traffic, or a `requestFilter` that doesn't match, the error-rate check can't decide, so the step falls back to the health probe and logs a warning. Application Insights data also arrives a few minutes late, so the last minutes of a step are counted less. A release with the canary takes about 20 minutes longer.
 - **Security scans start in report-only mode.** They report findings but block nothing until `dependencyCheckFailOnCvss` and `zapFailOnFindings` are switched on, after the existing findings are triaged.
 - **ZAP needs network reach and only sees anonymous pages.** Staging must be reachable from hosted agents, or the scan needs a self-hosted agent. Signed-in pages need a ZAP authentication context.
 - **Not covered yet:** static analysis of the C# code (CodeQL or SonarQube), secret scanning, and UI end-to-end tests. They need licence or team decisions ([review.md § 4](pipeline/review.md#4-next-steps)).
